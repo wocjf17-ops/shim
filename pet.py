@@ -14,6 +14,9 @@ import json, os, sys, time, random, math, ctypes, threading, urllib.request, url
 from PIL import Image, ImageTk
 
 WIN = sys.platform == "win32"
+if WIN:
+    import ctypes.wintypes
+
 KEY = "#ff00fe"          # 투명 크로마키 색
 FONT = "맑은 고딕"
 TOP = 110                # 말풍선 + 점프 공간
@@ -231,49 +234,51 @@ def window_rect(hwnd):
 
 # ------------------------------------------------ 404 차단형 범용 Gemini 요청 함수
 def query_gemini_api(api_key, system_prompt, contents, enable_search=False):
-    """구글 서버의 모델 폐기/버전 변경에 대응하여 404 발생 시 자동으로 다음 안정 모델로 폴백"""
-    candidate_endpoints = [
-        ("v1beta", "gemini-2.0-flash"),
-        ("v1", "gemini-1.5-flash"),
-        ("v1beta", "gemini-1.5-flash-latest"),
-        ("v1", "gemini-1.5-pro")
-    ]
-    
-    last_err = None
-    for ver, model_name in candidate_endpoints:
-        url = f"https://generativelanguage.googleapis.com/{ver}/models/{model_name}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
+    """현재 API Key에서 사용 가능한 모델을 자동 탐색하여 404 방지"""
+    # 1. 사용 가능한 모델 목록 조회 시도
+    usable_model = "models/gemini-1.5-flash"
+    try:
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        req_list = urllib.request.Request(list_url, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req_list, timeout=10) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            for m in data.get("models", []):
+                # 텍스트 생성을 지원하는 flash 모델 자동 선택
+                if "generateContent" in m.get("supportedGenerationMethods", []):
+                    if "flash" in m.get("name", ""):
+                        usable_model = m["name"]
+                        break
+    except Exception:
+        # 모델 목록 조회가 안 될 경우 기본값 순회
+        pass
+
+    # 2. 확인된 모델로 요청 전송
+    target_models = [usable_model, "models/gemini-1.5-flash-latest", "models/gemini-2.0-flash", "models/gemini-pro"]
+    for m_name in target_models:
+        clean_name = m_name if m_name.startswith("models/") else f"models/{m_name}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{clean_name}:generateContent?key={api_key}"
         
+        headers = {"Content-Type": "application/json"}
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": contents
         }
-        if enable_search and ver == "v1beta":
+        if enable_search:
             payload["tools"] = [{"google_search": {}}]
-            
+        
         try:
             req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=22) as res:
-                data = json.loads(res.read().decode("utf-8"))
-                return data["candidates"][0]["content"]["parts"][0]["text"]
+            with urllib.request.urlopen(req, timeout=20) as res:
+                res_data = json.loads(res.read().decode("utf-8"))
+                return res_data["candidates"][0]["content"]["parts"][0]["text"]
         except urllib.error.HTTPError as e:
-            last_err = e
-            # 404(모델 경로 없음)일 때만 다음 후보 모델로 재시도
             if e.code == 404:
                 continue
-            else:
-                detail = ""
-                try:
-                    d = json.loads(e.read().decode("utf-8"))
-                    detail = d.get("error", {}).get("message", "")
-                except Exception:
-                    pass
-                raise Exception(f"HTTP Error {e.code}: {e.reason} {detail}")
+            raise Exception(f"HTTP Error {e.code}: {e.reason}")
         except Exception as ex:
-            last_err = ex
-            break
+            raise Exception(f"통신 에러: {ex}")
 
-    raise Exception(f"Gemini 연결 실패: {last_err}")
+    raise Exception("사용 가능한 Gemini 모델을 찾지 못했습니다. API Key를 확인해주세요.")
 
 # ------------------------------------------------ 화면 테두리 빛 효과
 class EdgeGlowWindow:
@@ -1410,7 +1415,6 @@ class Game:
 
                 ans_text = ""
                 if provider == "Gemini":
-                    # 다중 모델 폴백 지원 호출 (404 방지)
                     contents = [{"role": "user", "parts": [{"text": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}]}]
                     ans_text = query_gemini_api(param_val, system_prompt, contents, enable_search=False)
                         
@@ -1621,7 +1625,6 @@ class Game:
                             ans_text = data["message"]["content"]
 
                     elif provider == "Gemini":
-                        # 폴백 구조가 적용된 Gemini 쿼리 실행
                         gemini_contents = []
                         for item in self.ai_history:
                             gemini_role = "user" if item["role"] == "user" else "model"
