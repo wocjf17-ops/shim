@@ -1,10 +1,9 @@
 """
-바탕화면 펫 프로그램 (자연스러운 동물 행동 물리 엔진 탑재)
-- 단일 사진 기반 발걸음 피치(뒤뚱임), 보폭 가감속, 기지개, 킁킁거리기, 털 털기 구현
-- 걷기 / 앉기 / 킁킁거리기 / 기지개 / 털 털기 / 두리번거리기 / 슬라이딩 / 어질어질 / 헬리콥터
-- 벽 타기 / 천장 타기 / 다른 창틀 위 올라타기 (Windows Perch)
-- 간식 주기, 포만감, 친밀도, 다중 소환(최대 5마리), 몰래 하는 군무
-- 도우미: 할 일 / 메모 / 타이머, 알림 설정, 생활 기록 설정
+바탕화면 펫 프로그램 (확장 버전)
+- 고양이 / 강아지 실제 사진 기반 자연스러운 물리 동작
+- 커스텀 알림창 (정각, 점심, 퇴근) & 화면 가장자리 빛(Glow) 효과
+- 세부 움직임 조절 (슬라이딩 도망, 커서 따라오기, 근무시간 얌전 모드, 전체화면 자동 숨기기)
+- Windows 시작 프로그램 등록 및 설정 창 완벽 대응
 """
 import tkinter as tk
 from tkinter import ttk
@@ -14,7 +13,7 @@ from PIL import Image, ImageTk
 WIN = sys.platform == "win32"
 KEY = "#ff00fe"          # 투명 크로마키 색
 FONT = "맑은 고딕"
-TOP = 110
+TOP = 110                # 말풍선 + 점프 공간
 MAX_PETS = 5
 MILESTONES = [50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000]
 
@@ -24,26 +23,47 @@ if WIN:
     except Exception:
         pass
 
-
 def base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-
 def res(name):
     return os.path.join(getattr(sys, "_MEIPASS", base_dir()), name)
 
-
 SAVE = os.path.join(base_dir(), "pet_save.json")
 
+# 확장된 기본 설정값
 DEFAULTS = {
-    "speed": 3, "activity": 5, "size": 140,
+    # 기본
+    "speed": 3, "activity": 5, "size": 140, "opacity": 100,
     "click_reaction": "폴짝", "hunger_min": 60, "snack": 25,
     "cry_always": False, "hidden_reactions": True,
-    "allow_wall": True, "allow_window": True,
-    "notify_hungry": True, "notify_hour": False, "sound": True,
     "locked": False, "safe_mode": False,
+    "show_inti": False, "idle_nap_min": 10,
+    
+    # 움직임 세부 설정 (사진 2)
+    "allow_wall": True, "allow_ceil": True, "allow_window": True,
+    "allow_sit": True, "short_sit": False,
+    "flee_mouse": True, "follow_mouse": False,
+    "work_safe_mode": False, "auto_hide_fullscreen": False,
+    "spd_walk": 2.0, "spd_spin": 3.0, "spd_slide": 3.0,
+    "slide_delay": 0.12,
+
+    # 알림 및 자동 시작 설정 (사진 1)
+    "autostart": False,
+    "notify_hour_popup": True,
+    "work_hour_mute": False,
+    "work_mute_start": 9, "work_mute_end": 18,
+    "glow_edge": True,
+    "glow_color": "피치·핑크·보라·하늘",
+    "glow_width": "넓게",
+    "glow_intensity": "선명하게",
+    
+    "notify_lunch": True, "lunch_time": "12:00", "lunch_msg": "점심 먹으러 가자!",
+    "notify_leave": True, "leave_time": "18:00", "leave_msg": "퇴근이다! 오늘도 수고했어",
+    
+    "notify_hungry": True, "notify_hour": True, "sound": True,
 }
 
 SECRETS = {
@@ -52,7 +72,7 @@ SECRETS = {
     "tickle": ("간지럼", "친구를 빠르게 5번 클릭하기"),
 }
 
-# ---------------------------------------------------------------- Windows 창 감지 API
+# Windows 레지스트리 / 창 제어 API
 if WIN:
     user32 = ctypes.windll.user32
     try:
@@ -71,7 +91,37 @@ if WIN:
     user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
     user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
 
+def set_autostart(enable=True):
+    if not WIN: return
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        app_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        if enable:
+            winreg.SetValueEx(key, "DesktopPetApp", 0, winreg.REG_SZ, f'"{app_path}"')
+        else:
+            try:
+                winreg.DeleteValue(key, "DesktopPetApp")
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+def is_fullscreen_app_active():
+    if not WIN: return False
+    try:
+        fg = user32.GetForegroundWindow()
+        if not fg: return False
+        r = RECT()
+        user32.GetWindowRect(fg, ctypes.byref(r))
+        sw = user32.GetSystemMetrics(0)
+        sh = user32.GetSystemMetrics(1)
+        return (r.l <= 0 and r.t <= 0 and r.r >= sw and r.b >= sh)
+    except Exception:
+        return False
 
 def work_area(root):
     if WIN:
@@ -83,11 +133,9 @@ def work_area(root):
             pass
     return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight() - 40
 
-
 def list_windows(min_top):
     out = []
-    if not WIN:
-        return out
+    if not WIN: return out
     pid = os.getpid()
 
     def cb(hwnd, lp):
@@ -120,19 +168,109 @@ def list_windows(min_top):
     user32.EnumWindows(EnumProc(cb), 0)
     return out
 
-
 def window_rect(hwnd):
-    if not WIN:
-        return None
+    if not WIN: return None
     try:
-        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
-            return None
+        if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd): return None
         r = RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(r))
         return (r.l, r.t, r.r, r.b)
     except Exception:
         return None
 
+# ---------------------------------------------------------------- 화면 테두리 빛 (Glow Effect)
+class EdgeGlowWindow:
+    def __init__(self, root):
+        self.root = root
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        try:
+            self.win.attributes("-transparentcolor", KEY)
+        except tk.TclError:
+            pass
+        self.win.config(bg=KEY)
+        
+        self.sw = root.winfo_screenwidth()
+        self.sh = root.winfo_screenheight()
+        self.win.geometry(f"{self.sw}x{self.sh}+0+0")
+        
+        self.cv = tk.Canvas(self.win, width=self.sw, height=self.sh, bg=KEY, highlightthickness=0)
+        self.cv.pack(fill="both", expand=True)
+        self.win.withdraw()
+
+    def show(self, palette_mode="피치·핑크·보라·하늘", width_mode="넓게"):
+        self.cv.delete("all")
+        glow_thick = 24 if width_mode == "넓게" else 14
+        
+        # 그라데이션 및 색상 밴드 구성
+        colors = ["#ff9aa2", "#ffb7b2", "#ffdac1", "#e2f0cb", "#b5ead7", "#c7ceea"]
+        steps = glow_thick // 2
+        for i in range(steps):
+            c = colors[i % len(colors)]
+            pad = i * 2
+            self.cv.create_rectangle(pad, pad, self.sw - pad, self.sh - pad, outline=c, width=2)
+            
+        self.win.deiconify()
+        self.win.attributes("-topmost", True)
+
+    def hide(self):
+        self.win.withdraw()
+
+# ---------------------------------------------------------------- 별도 알림창 (사진 1)
+class CustomAlertPopup:
+    def __init__(self, root, on_close=None):
+        self.root = root
+        self.on_close = on_close
+        self.win = tk.Toplevel(root)
+        self.win.title("정각 알림")
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.config(bg="#f8f9fa")
+        
+        # 둥근 카드 모양 프레임
+        f = tk.Frame(self.win, bg="#ffffff", bd=1, relief="solid")
+        f.pack(fill="both", expand=True, padx=4, pady=4)
+        
+        # 닫기 (X)
+        top_bar = tk.Frame(f, bg="#ffffff")
+        top_bar.pack(fill="x", padx=12, pady=(10, 0))
+        tk.Label(top_bar, text="알림", font=(FONT, 9, "bold"), bg="#ffffff", fg="#666666").pack(side="left")
+        close_btn = tk.Label(top_bar, text="✕", font=(FONT, 11), bg="#ffffff", fg="#999999", cursor="hand2")
+        close_btn.pack(side="right")
+        close_btn.bind("<Button-1>", lambda e: self.close())
+        
+        self.lbl_title = tk.Label(f, text="정각 알림", font=(FONT, 10), bg="#ffffff", fg="#888888")
+        self.lbl_title.pack(anchor="w", padx=18, pady=(8, 0))
+        
+        self.lbl_time = tk.Label(f, text="11:00", font=(FONT, 38, "bold"), bg="#ffffff", fg="#222222")
+        self.lbl_time.pack(anchor="w", padx=14, pady=2)
+        
+        self.lbl_sub = tk.Label(f, text="오전 11시야!\n(미리보기)", font=(FONT, 10), bg="#ffffff", fg="#555555", justify="left")
+        self.lbl_sub.pack(anchor="w", padx=18, pady=(0, 16))
+        
+        btn = tk.Button(f, text="확인했어", font=(FONT, 10, "bold"), bg="#2d3238", fg="#ffffff",
+                        activebackground="#454b52", activeforeground="#ffffff", relief="flat",
+                        padx=18, pady=6, cursor="hand2", command=self.close)
+        btn.pack(anchor="e", padx=18, pady=(0, 14))
+
+    def show(self, time_str, sub_text, title="알림"):
+        self.lbl_title.config(text=title)
+        self.lbl_time.config(text=time_str)
+        self.lbl_sub.config(text=sub_text)
+        
+        w, h = 300, 220
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        # 화면 좌측 상단 살짝 안쪽에 띄우기
+        self.win.geometry(f"{w}x{h}+60+{sh // 4}")
+        self.win.deiconify()
+        self.win.attributes("-topmost", True)
+
+    def close(self):
+        self.win.withdraw()
+        if self.on_close:
+            self.on_close()
 
 # ---------------------------------------------------------------- 펫 한 마리
 class Pet:
@@ -160,7 +298,7 @@ class Pet:
         self.moved, self.off, self.start_pos = False, (0, 0), (0, 0)
         self.last_geo = None
         self.fxk = set()
-        self.walk_phase = 0.0
+        self.flee_cooldown = 0
         self.start("idle")
 
         c = self.cv
@@ -196,29 +334,14 @@ class Pet:
         g, s = self.g, self.g.s
         self.act, self.t, self.kw = act, 0, kw
         sc = (11 - s["activity"]) / 5.0
-
         if act == "idle":
-            self.dur = int(random.randint(35, 80) * sc)
+            self.dur = int(random.randint(35, 95) * sc)
         elif act == "walk":
             self.dir = random.choice([-1, 1])
-            self.dur = random.randint(90, 240)
-        elif act == "sniff":
-            # 바닥 킁킁거리기
-            self.dur = random.randint(45, 85)
-            self.say("킁킁...", 1.5)
-        elif act == "stretch":
-            # 기지개 켜기
-            self.dur = 50
-            self.say("쭈우욱~", 1.5)
-        elif act == "shake":
-            # 털 털기
-            self.dur = 30
-            self.say("부르르!", 1.2)
-        elif act == "look":
-            # 멈춰서 두리번거리기
-            self.dur = 45
+            self.dur = random.randint(90, 250)
         elif act == "sit":
-            self.dur = int(random.randint(110, 240) * sc)
+            base_dur = random.randint(30, 60) if s["short_sit"] else random.randint(110, 240)
+            self.dur = int(base_dur * sc)
         elif act == "hop":
             self.dur = 22 * kw.get("n", random.randint(1, 3))
         elif act == "cry":
@@ -227,22 +350,22 @@ class Pet:
                 self.say("배고파요 ㅠㅠ 간식 줘요", 3)
             else:
                 self.dur = 100
-                self.say("깜짝이야!", 2)
+                self.say("으앙… 놀랐잖아요", 2)
         elif act == "laugh":
             self.dur = 70
-            self.say("기분 최고예요♥", 2)
+            self.say("헤헤! 너무 좋아요♥", 2)
         elif act == "eat":
             self.dur = 55
         elif act == "slide":
-            self.dir = random.choice([-1, 1])
-            self.dur = 34
+            self.dir = kw.get("dir", random.choice([-1, 1]))
+            self.dur = int(34 / max(0.5, s.get("spd_slide", 3.0) / 3.0))
             self.say("슝~ 달리기!", 1.5)
         elif act == "dizzy":
             self.dur = 100
-            self.say("어질어질…", 2.5)
+            self.say("어질어질… 빙글빙글", 2.5)
         elif act == "spin":
-            self.dur = 75
-            self.say("위이이잉!", 2)
+            self.dur = int(75 / max(0.5, s.get("spd_spin", 3.0) / 3.0))
+            self.say("위이이잉! 날아간다~", 2)
         elif act == "dance":
             self.dur = 200
         elif act == "wall":
@@ -254,7 +377,7 @@ class Pet:
             self.phase = "rise"
             self.x0, self.y0 = self.x, self.y
             self.dir = random.choice([-1, 1])
-            self.say("천장으로!", 1.5)
+            self.say("천장으로 올라가요!", 1.5)
         elif act == "perch":
             wins = list_windows(g.T)
             if not wins:
@@ -268,7 +391,7 @@ class Pet:
             self.x0, self.y0 = self.x, self.y
             self.phase = "jump"
             self.pdur = random.randint(200, 450)
-            self.say("창 위로 점프!", 1.5)
+            self.say("창 위로 올라가자!", 1.5)
         elif act == "fall":
             self.vy = 0
 
@@ -276,18 +399,24 @@ class Pet:
         g, s = self.g, self.g.s
         if g.hungry() and random.random() < 0.55:
             return self.start("cry", kind="hungry")
-        if s["locked"]:
-            ch = [("idle", 40), ("sit", 30), ("stretch", 15), ("hop", 15)]
+            
+        # 평일 얌전 모드 확인
+        work_safe = False
+        if s["work_safe_mode"]:
+            lt = time.localtime()
+            if lt.tm_wday < 5 and (9 <= lt.tm_hour < 18):
+                work_safe = True
+
+        if s["locked"] or s["safe_mode"] or work_safe:
+            ch = [("idle", 50), ("hop", 20)]
+            if s["allow_sit"]: ch.append(("sit", 30))
         else:
-            # 실제 동물 행동 가중치 분배
-            ch = [("walk", 35), ("idle", 14), ("sniff", 12), ("look", 10),
-                  ("stretch", 6), ("shake", 5), ("sit", 8), ("hop", 5),
-                  ("slide", 4), ("dizzy", 2), ("spin", 2)]
-            if not s["safe_mode"]:
-                if s["allow_wall"]:
-                    ch += [("wall", 4), ("ceil", 3)]
-                if s["allow_window"] and WIN:
-                    ch += [("perch", 6)]
+            ch = [("walk", 40), ("idle", 14), ("hop", 8), ("slide", 6), ("dizzy", 3), ("spin", 3)]
+            if s["allow_sit"]: ch.append(("sit", 12))
+            if s["allow_wall"]: ch.append(("wall", 5))
+            if s["allow_ceil"]: ch.append(("ceil", 4))
+            if s["allow_window"] and WIN: ch.append(("perch", 7))
+            
         names = [c[0] for c in ch]
         weights = [c[1] for c in ch]
         self.start(random.choices(names, weights)[0])
@@ -319,15 +448,13 @@ class Pet:
             return self.start("laugh")
         r = s["click_reaction"]
         if r == "랜덤":
-            r = random.choice(["폴짝", "울기", "어질어질", "기지개"])
+            r = random.choice(["폴짝", "울기", "어질어질"])
         if r == "울기":
             self.start("cry", kind="click")
         elif r == "어질어질":
             self.start("dizzy")
-        elif r == "기지개":
-            self.start("stretch")
         else:
-            self.say(random.choice(["놀아줘서 좋아♥", "신난다!", "헤헤~"]), 1.5)
+            self.say(random.choice(["신난다!", "함께 놀자!", "쓰다듬어줘서 좋아♥"]), 1.5)
             self.start("hop", n=1)
 
     def menu(self, e):
@@ -341,18 +468,17 @@ class Pet:
         m.add_command(label="알림 설정...", command=g.open_notify)
         m.add_command(label="화면 가운데로 모으기", command=g.gather)
         m.add_command(label="움직임 · 반응 설정...", command=g.open_motion)
-        m.add_checkbutton(label="위치 고정 (자동 이동 멈추기)",
-                          variable=g.lock_var, command=g.sync_flags)
+        m.add_checkbutton(label="위치 고정 (자동 이동 멈추기)", variable=g.lock_var, command=g.sync_flags)
         m.add_command(label="친구 기록 · 생활 설정...", command=g.open_record)
         m.add_command(label="도우미 · 할 일 · 메모 · 타이머...", command=g.open_helper)
-        m.add_command(label=f"간식 주기  ·  포만감 {int(g.sat)}/100",
-                      command=lambda: g.feed(self))
+        m.add_command(label=f"간식 주기  ·  포만감 {int(g.sat)}/100", command=lambda: g.feed(self))
+        
         sub = tk.Menu(m, tearoff=0, font=(FONT, 10))
         for label, act, kw in ACT_MENU:
             sub.add_command(label=label, command=lambda a=act, k=kw: self.start(a, **k))
         m.add_cascade(label="동작 바로 보기", menu=sub)
-        m.add_checkbutton(label="안전 모드 (바닥에서만 놀기)", variable=g.safe_var,
-                          command=g.sync_flags)
+        
+        m.add_checkbutton(label="안전 모드 (바닥에서만 놀기)", variable=g.safe_var, command=g.sync_flags)
         m.add_separator()
         m.add_command(label="종료", command=g.quit)
         self.win.focus_force()
@@ -361,77 +487,32 @@ class Pet:
         finally:
             m.grab_release()
 
-    # ==================== 자연스러운 물리 모션 구현 ====================
     def a_idle(self):
         self.y = self.ground()
-        # 자연스러운 호흡 모션
-        breath = math.sin(self.t * 0.08)
+        k = math.sin(self.t * 0.12)
         if self.t >= self.dur:
             self.next()
-        return 0, 0, 0, 1.0 - 0.012 * breath, 1.0 + 0.015 * breath
+        return 0, 0, 0, 1 - 0.015 * k, 1 + 0.02 * k
 
     def a_walk(self):
         g = self.g
         self.y = self.ground()
-        self.walk_phase += 0.22
+        sp = g.s["speed"] * (g.s["spd_walk"] / 2.0) * (0.6 if g.hungry() else 1.0)
         
-        # 보폭 가속 곡선: 발을 디딜 때 앞으로 추진하고, 공중에 뜰 때 서서히 이동
-        step_cycle = math.sin(self.walk_phase)
-        push = max(0.2, (step_cycle + 1.0) / 2.0)
-        base_speed = g.s["speed"] * (0.6 if g.hungry() else 1.0)
-        self.x += self.dir * (base_speed * push * 1.3)
-
+        # 커서 따라오기 모드
+        if g.s["follow_mouse"]:
+            px, _ = self.win.winfo_pointerxy()
+            cx = self.x + g.W / 2
+            if abs(px - cx) > 40:
+                self.dir = 1 if px > cx else -1
+                
+        self.x += self.dir * sp
         if self.x < g.L - 25: self.dir = 1
         if self.x > g.R - g.W + 25: self.dir = -1
-
-        # 좌우 뒤뚱임 피치 (Roll & Bounce): 발 디딤에 따른 각도와 바닥 튕김
-        pitch_angle = step_cycle * 3.5 * self.dir
-        bounce = -abs(math.cos(self.walk_phase)) * 4.5
-        squash = 1.0 + 0.02 * step_cycle
-        stretch = 1.0 - 0.02 * step_cycle
-
+        k = math.sin(self.t * 0.28)
         if self.t >= self.dur:
             self.next()
-        return 0, bounce, pitch_angle, squash, stretch
-
-    def a_sniff(self):
-        # 바닥 냄새 킁킁거리기: 앞쪽으로 고개 숙이고 코를 쫑긋거림
-        self.y = self.ground()
-        sniff_wiggle = math.sin(self.t * 0.6) * 1.5
-        tilt = 6.0 * self.dir  # 앞으로 살짝 숙인 각도
-        if self.t >= self.dur:
-            self.next()
-        return 0, 3 + sniff_wiggle, tilt, 1.03, 0.96
-
-    def a_stretch(self):
-        # 기지개 켜기: 앞부분 낮추며 길게 늘였다가 돌아오기
-        self.y = self.ground()
-        u = min(1.0, self.t / self.dur)
-        arc = math.sin(u * math.pi)
-        dy = arc * 5
-        sx = 1.0 + arc * 0.12  # 가로로 길어짐
-        sy = 1.0 - arc * 0.10  # 높이는 낮아짐
-        tilt = -5.0 * arc * self.dir
-        if self.t >= self.dur:
-            self.next()
-        return 0, dy, tilt, sx, sy
-
-    def a_shake(self):
-        # 털 털기: 고속 좌우 진동
-        self.y = self.ground()
-        shake_w = math.sin(self.t * 1.4) * 5.0
-        shake_dx = math.cos(self.t * 1.4) * 2.5
-        if self.t >= self.dur:
-            self.next()
-        return shake_dx, 0, shake_w, 1.04, 0.96
-
-    def a_look(self):
-        # 멈춰서 두리번거리기
-        self.y = self.ground()
-        look_ang = math.sin(self.t * 0.15) * 4.0
-        if self.t >= self.dur:
-            self.next()
-        return 0, 0, look_ang, 1.0, 1.0
+        return 0, -abs(k) * 5, 2 * k, 1, 1
 
     def a_sit(self):
         self.y = self.ground()
@@ -481,7 +562,8 @@ class Pet:
     def a_slide(self):
         g = self.g
         self.y = self.ground()
-        sp = 16 * (1 - self.t / self.dur)
+        base_s = 16 * (g.s["spd_slide"] / 3.0)
+        sp = base_s * (1 - self.t / self.dur)
         self.x += self.dir * sp
         self.x = max(g.L - 25, min(g.R - g.W + 25, self.x))
         self.fxk.add("dust")
@@ -506,7 +588,8 @@ class Pet:
         if t >= d:
             self.sq = 6
             self.start("idle")
-        return math.sin(t * 0.2) * 8, -lift, (t * 40) % 360, 1, 1
+        rot_spd = 40 * (self.g.s["spd_spin"] / 3.0)
+        return math.sin(t * 0.2) * 8, -lift, (t * rot_spd) % 360, 1, 1
 
     def a_dance(self):
         self.y = self.ground()
@@ -518,7 +601,6 @@ class Pet:
         return 0, -abs(f) * 12, 10 * f, 1, 1
 
     def a_drag(self):
-        f = math.sin(self.t * 0.5)
         return 0, 0, math.sin(self.t * 0.3) * 8, 1, 1.04
 
     def a_fall(self):
@@ -536,6 +618,7 @@ class Pet:
         ang = -90 if left else 90
         fw = g.frame(ang, flip=False).width()
         tx = g.L - (g.W - fw) / 2 if left else g.R - (g.W + fw) / 2
+        sp_climb = 2.5 * (g.s["spd_walk"] / 2.0)
         if self.phase == "go":
             self.y = self.ground()
             step = 7 if tx > self.x else -7
@@ -551,7 +634,7 @@ class Pet:
             return 0, -abs(k) * 4, 2 * k, 1, 1
         self.x = tx
         if self.phase == "climb":
-            self.y -= 2.5
+            self.y -= sp_climb
             if self.y <= self.climb_to or self.y <= g.T:
                 self.phase = "hang"
             return math.sin(self.t * 0.4) * 2, 0, ang, 1, 1
@@ -571,7 +654,7 @@ class Pet:
                 self.phase, self.ct = "crawl", 0
             return 0, -math.sin(math.pi * u) * 20, 180 * u, 1, 1
         self.y = ty
-        self.x += self.dir * 2
+        self.x += self.dir * 2 * (g.s["spd_walk"] / 2.0)
         if self.x < g.L - 25: self.dir = 1
         if self.x > g.R - g.W + 25: self.dir = -1
         self.ct += 1
@@ -603,7 +686,7 @@ class Pet:
                 return 0, 0, 0, 1, 1
             self.rect = r
         l, t, r_, b = self.rect
-        self.rel += self.dir * 1.6
+        self.rel += self.dir * 1.6 * (g.s["spd_walk"] / 2.0)
         lo, hi = -g.W / 2 + 30, (r_ - l) - g.W / 2 - 30
         if self.rel < lo: self.rel, self.dir = lo, 1
         if self.rel > hi: self.rel, self.dir = hi, -1
@@ -619,6 +702,16 @@ class Pet:
         g = self.g
         now = time.time()
         self.fxk = set()
+        
+        # 커서가 가까이 오면 슬라이딩으로 도망가기 로직 (사진 2)
+        if g.s["flee_mouse"] and self.act in ("idle", "walk", "sit") and now > self.flee_cooldown:
+            px, py = self.win.winfo_pointerxy()
+            cx, cy = self.x + g.W / 2, self.y + g.H / 2
+            if math.hypot(px - cx, py - cy) < 70:
+                flee_dir = -1 if px > cx else 1
+                self.flee_cooldown = now + g.s.get("slide_delay", 0.12) + 1.5
+                self.start("slide", dir=flee_dir)
+
         pose = getattr(self, "a_" + self.act)()
         self.t += 1
         dx, dy, ang, sx, sy = pose
@@ -641,18 +734,22 @@ class Pet:
         cv.delete("fx")
         cx, fy = self.face(dx, dy)
         t = self.t
+        
+        # 친밀도 숫자 상시 표시 (사진 2)
+        if g.s["show_inti"]:
+            cv.create_text(g.W // 2, g.H - g.ih - 10, text=f"♥ {g.inti}", fill="#ff4081",
+                           font=(FONT, 9, "bold"), tags="fx")
+                           
         if "tears" in self.fxk and abs(ang) < 1:
             for i, s in enumerate((-1, 1)):
                 ex = cx + s * g.ih * 0.14
                 ey = fy + ((t * 3 + i * 9) % 32)
-                cv.create_oval(ex - 3, ey - 4, ex + 3, ey + 4, fill="#6cc5ff",
-                               outline="#3b9be0", tags="fx")
+                cv.create_oval(ex - 3, ey - 4, ex + 3, ey + 4, fill="#6cc5ff", outline="#3b9be0", tags="fx")
         if "hearts" in self.fxk:
             for i in range(3):
                 hx = cx + (i - 1) * 26
                 hy = fy - 20 - ((t * 1.5 + i * 12) % 40)
-                cv.create_text(hx, hy, text="♥", fill="#ff5c8a",
-                               font=(FONT, 14, "bold"), tags="fx")
+                cv.create_text(hx, hy, text="♥", fill="#ff5c8a", font=(FONT, 14, "bold"), tags="fx")
         if "stars" in self.fxk:
             for i in range(3):
                 a = t * 0.2 + i * 2.1
@@ -661,26 +758,22 @@ class Pet:
         if "zzz" in self.fxk:
             for i in range(3):
                 zy = fy - 10 - ((t * 0.7 + i * 14) % 42)
-                cv.create_text(cx + 26 + i * 7, zy, text="z", fill="#5b6c8f",
-                               font=(FONT, 9 + i * 2, "bold"), tags="fx")
+                cv.create_text(cx + 26 + i * 7, zy, text="z", fill="#5b6c8f", font=(FONT, 9 + i * 2, "bold"), tags="fx")
         if "cookie" in self.fxk:
             r = max(2, 10 * (1 - self.t / max(1, self.dur)))
             ky = fy + 0.14 * g.ih
-            cv.create_oval(cx - r, ky - r, cx + r, ky + r, fill="#d9953f",
-                           outline="#a8691c", tags="fx")
+            cv.create_oval(cx - r, ky - r, cx + r, ky + r, fill="#d9953f", outline="#a8691c", tags="fx")
         if "notes" in self.fxk:
             for i in range(3):
                 nx = cx + (i - 1) * 34
                 ny = g.H - g.ih - 8 - ((t * 1.2 + i * 15) % 25)
-                cv.create_text(nx, ny, text="♪", fill="#7a5cff",
-                               font=(FONT, 15, "bold"), tags="fx")
+                cv.create_text(nx, ny, text="♪", fill="#7a5cff", font=(FONT, 15, "bold"), tags="fx")
         if "dust" in self.fxk:
             for i in range(4):
                 px = cx - self.dir * (g.iw * 0.4 + i * 12)
                 py = g.H - 6 - i * 3
                 rr = 6 - i
-                cv.create_oval(px - rr, py - rr, px + rr, py + rr, fill="#d8d3c8",
-                               outline="", tags="fx")
+                cv.create_oval(px - rr, py - rr, px + rr, py + rr, fill="#d8d3c8", outline="", tags="fx")
         if now < g.bouquet_until and self.idx == 0:
             bx, by = g.W // 2 + g.iw * 0.45, g.H - 22
             for k in range(5):
@@ -702,18 +795,14 @@ class Pet:
                 t = cv.create_text(g.W // 2, 24, text=text, tags="b", width=g.W - 24,
                                    justify="center", font=(FONT, 10, "bold"), fill="#333333")
                 x1, y1, x2, y2 = cv.bbox(t)
-                rc = cv.create_rectangle(x1 - 8, y1 - 4, x2 + 8, y2 + 4,
-                                         fill="white", outline="#ffb300", width=2, tags="b")
+                rc = cv.create_rectangle(x1 - 8, y1 - 4, x2 + 8, y2 + 4, fill="white", outline="#ffb300", width=2, tags="b")
                 cv.tag_lower(rc, t)
             self.drawn = text
 
-
 ACT_MENU = [
     ("앉아서 쉬기", "sit", {}),
-    ("바닥 킁킁거리기", "sniff", {}),
-    ("기지개 켜기", "stretch", {}),
-    ("부르르 털 털기", "shake", {}),
-    ("두리번거리기", "look", {}),
+    ("클릭할 때 달달 떨며 우는 모습", "cry", {"kind": "click"}),
+    ("배고플 때 우는 모습", "cry", {"kind": "hungry"}),
     ("폴짝 뛰기", "hop", {"n": 2}),
     ("슬라이딩", "slide", {}),
     ("어질어질", "dizzy", {}),
@@ -723,7 +812,6 @@ ACT_MENU = [
     ("창 타기", "perch", {}),
     ("몰래 하는 군무", "dance", {}),
 ]
-
 
 # ---------------------------------------------------------------- 전체 관리 (Game)
 class Game:
@@ -751,7 +839,7 @@ class Game:
         # 이미지 파일 로드
         self.photo_base = None
         target_name = None
-        for cand in ["pet.png", "PET.PNG", "dog.png", "DOG.PNG", "pet_2.png"]:
+        for cand in ["pet.png", "PET.PNG", "pet_2.png", "PET_2.PNG"]:
             p = res(cand)
             if os.path.exists(p):
                 target_name = p
@@ -781,15 +869,21 @@ class Game:
         self.bouquet_until = 0
         self.timer_end = 0
         self.last_hour = -1
+        self.last_min_check = -1
         self.last_hungry_note = 0
         self.still, self.lastp = 0.0, (0, 0)
         self.dancing, self.dance_cool = False, 0
         self.circ = {}
         self.restore_win = None
+        
+        # 가장자리 빛 & 커스텀 알림 팝업 초기화
+        self.edge_glow = EdgeGlowWindow(r)
+        self.alert_popup = CustomAlertPopup(r, on_close=self.on_alert_closed)
 
         for i in range(max(1, min(MAX_PETS, int(d.get("pets", 1))))):
             self.pets.append(Pet(self, i))
 
+        self.apply_opacity()
         self.loop()
 
     def set_size(self, size):
@@ -800,12 +894,20 @@ class Game:
         self.W, self.H = w + 50, h + TOP
         self.cache.clear()
 
+    def apply_opacity(self):
+        op = max(0.1, min(1.0, self.s.get("opacity", 100) / 100.0))
+        for p in self.pets:
+            try:
+                p.win.attributes("-alpha", op)
+            except Exception:
+                pass
+
     def frame(self, angle=0, sx=1.0, sy=1.0, flip=False):
-        a = int(round(angle / 2.0) * 2) % 360  # 부드러운 각도 조절을 위해 2도 단위 양자화
+        a = int(round(angle / 4.0) * 4) % 360
         key = (a, round(sx, 2), round(sy, 2), flip)
         fr = self.cache.get(key)
         if fr is None:
-            if len(self.cache) > 800:
+            if len(self.cache) > 600:
                 self.cache.clear()
             im = self.photo_base
             if flip:
@@ -857,6 +959,21 @@ class Game:
                 return m
         return None
 
+    def trigger_custom_alert(self, title, time_str, msg):
+        self.alert_popup.show(time_str, msg, title=title)
+        if self.s.get("glow_edge", True):
+            self.edge_glow.show(self.s.get("glow_color", "피치·핑크·보라·하늘"), self.s.get("glow_width", "넓게"))
+        if WIN and self.s["sound"]:
+            try:
+                import winsound
+                winsound.Beep(880, 200)
+                winsound.Beep(1320, 300)
+            except Exception:
+                pass
+
+    def on_alert_closed(self):
+        self.edge_glow.hide()
+
     def found(self, key, pet):
         if key not in self.secrets:
             self.secrets.append(key)
@@ -879,6 +996,7 @@ class Game:
             return
         p = Pet(self, len(self.pets))
         self.pets.append(p)
+        self.apply_opacity()
         p.say("안녕! 놀자~", 2)
         p.start("hop", n=2)
         self.save()
@@ -928,6 +1046,17 @@ class Game:
         self.last = now
         self.tm += dt
         s = self.s
+
+        # 전체화면 실행 감지 시 자동 숨기기 (사진 2)
+        if s["auto_hide_fullscreen"]:
+            if is_fullscreen_app_active():
+                for p in self.pets:
+                    if p.win.winfo_viewable(): p.win.withdraw()
+            else:
+                for p in self.pets:
+                    if not p.win.winfo_viewable() and self.restore_win is None:
+                        p.win.deiconify()
+
         if s["hunger_min"] > 0:
             self.sat = max(0.0, self.sat - dt * 100 / (s["hunger_min"] * 60))
         self.acc += dt
@@ -940,13 +1069,41 @@ class Game:
                 self.pets[0].say(f"꽃다발 선물! 친밀도 {self.inti}", 4)
                 self.pets[0].start("hop", n=3)
             self.save()
+
         lt = time.localtime()
-        if s["notify_hour"] and lt.tm_min == 0 and lt.tm_hour != self.last_hour:
-            self.last_hour = lt.tm_hour
-            self.pets[0].say(f"{lt.tm_hour}시 정각이에요!", 4)
+        cur_hm = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+
+        # 1분 단위 스케줄 체크 (정각, 점심, 퇴근)
+        if lt.tm_min != self.last_min_check:
+            self.last_min_check = lt.tm_min
+            
+            # 1) 정각 알림
+            if lt.tm_min == 0 and lt.tm_hour != self.last_hour:
+                self.last_hour = lt.tm_hour
+                is_weekday = lt.tm_wday < 5
+                mute = s["work_hour_mute"] and is_weekday and (s["work_mute_start"] <= lt.tm_hour <= s["work_mute_end"])
+                
+                if not mute:
+                    ampm = "오전" if lt.tm_hour < 12 else "오후"
+                    disp_h = lt.tm_hour if lt.tm_hour <= 12 else lt.tm_hour - 12
+                    sub_text = f"{ampm} {disp_h}시야!"
+                    if s.get("notify_hour_popup", True):
+                        self.trigger_custom_alert("정각 알림", f"{lt.tm_hour:02d}:00", sub_text)
+                    elif s.get("notify_hour", True):
+                        self.pets[0].say(f"{lt.tm_hour}시 정각이에요!", 4)
+
+            # 2) 점심 알림
+            if s.get("notify_lunch", True) and cur_hm == s.get("lunch_time", "12:00"):
+                self.trigger_custom_alert("점심 알림", cur_hm, s.get("lunch_msg", "점심 먹으러 가자!"))
+
+            # 3) 퇴근 알림
+            if s.get("notify_leave", True) and cur_hm == s.get("leave_time", "18:00"):
+                self.trigger_custom_alert("퇴근 알림", cur_hm, s.get("leave_msg", "퇴근이다! 오늘도 수고했어"))
+
         if self.hungry() and s["notify_hungry"] and now - self.last_hungry_note > 300 and s["hunger_min"] > 0:
             self.last_hungry_note = now
             self.pets[0].say("배고파요… 간식 주세요", 4)
+            
         if self.timer_end and now >= self.timer_end:
             self.timer_end = 0
             self.pets[0].say("⏰ 타이머 끝났어요!", 5)
@@ -959,6 +1116,7 @@ class Game:
                     winsound.Beep(1175, 400)
                 except Exception:
                     pass
+
         self.mouse_reactions(now, dt)
         for p in list(self.pets):
             p.update()
@@ -980,21 +1138,26 @@ class Game:
                 for p in self.pets:
                     if p.act == "dance":
                         p.start("idle")
+                        
+        # 4초 가만히 있으면 군무
         if len(self.pets) >= 2 and self.still >= 4 and not self.dancing and now > self.dance_cool:
             self.dancing = True
             self.dance_cool = now + 30
             for p in self.pets:
-                if p.act in ("walk", "idle", "sit", "hop", "sniff", "stretch"):
+                if p.act in ("walk", "idle", "sit", "hop"):
                     p.start("dance")
             self.found("dance", self.pets[0])
+
         if self.dancing and not any(p.act == "dance" for p in self.pets):
             self.dancing = False
+
+        # 마우스 뺑뺑이(spin) 감지
         for p in self.pets:
             hx = p.x + self.W / 2
             hy = p.y + self.H - self.ih * 0.64
             d = math.hypot(px - hx, py - hy)
             c = self.circ.setdefault(id(p), {"a": None, "tot": 0.0, "t": now})
-            if d < 110 and d > 8 and p.act in ("walk", "idle", "sit", "sniff"):
+            if d < 110 and d > 8 and p.act in ("walk", "idle", "sit"):
                 a = math.atan2(py - hy, px - hx)
                 if c["a"] is not None and now - c["t"] < 0.6:
                     da = (a - c["a"] + math.pi) % (2 * math.pi) - math.pi
@@ -1022,22 +1185,290 @@ class Game:
         self.wins[key] = w
         return w
 
+    # ------------------------------------------------ 설정 UI 1: 자동 시작 / 알림 설정 (사진 1)
+    def open_notify(self):
+        w = self.dialog("notify", "전주치이카와 · 자동 시작 / 알림 설정", 460, 680)
+        if w is None: return
+        f = (FONT, 9)
+        s = self.s
+
+        v_hour = tk.BooleanVar(value=s["notify_hour"])
+        v_auto = tk.BooleanVar(value=s["autostart"])
+        v_hour_pop = tk.BooleanVar(value=s["notify_hour_popup"])
+        v_work_mute = tk.BooleanVar(value=s["work_hour_mute"])
+        v_m_start = tk.IntVar(value=s["work_mute_start"])
+        v_m_end = tk.IntVar(value=s["work_mute_end"])
+        
+        v_glow = tk.BooleanVar(value=s["glow_edge"])
+        v_glow_col = tk.StringVar(value=s["glow_color"])
+        v_glow_w = tk.StringVar(value=s["glow_width"])
+        v_glow_i = tk.StringVar(value=s["glow_intensity"])
+        
+        v_lunch = tk.BooleanVar(value=s["notify_lunch"])
+        v_lunch_t = tk.StringVar(value=s["lunch_time"])
+        v_lunch_m = tk.StringVar(value=s["lunch_msg"])
+        
+        v_leave = tk.BooleanVar(value=s["notify_leave"])
+        v_leave_t = tk.StringVar(value=s["leave_time"])
+        v_leave_m = tk.StringVar(value=s["leave_msg"])
+        
+        v_nap = tk.BooleanVar(value=True)
+        v_nap_m = tk.IntVar(value=s.get("idle_nap_min", 10))
+
+        # 메인 컨테이너
+        top_f = tk.Frame(w, bg="#fffaf7")
+        top_f.pack(fill="both", expand=True, padx=16, pady=12)
+
+        # 1. 정각 알림 블록
+        tk.Checkbutton(top_f, text="정각 알림 (매시간 현재 시각 알려주기)", variable=v_hour,
+                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w")
+        tk.Label(top_f, text="표시 방식과 평일 제외 시간은 아래에서 선택하세요.", font=(FONT, 8),
+                 fg="#777", bg="#fffaf7").pack(anchor="w", padx=20)
+
+        tk.Checkbutton(top_f, text="Windows 로그인 시 자동으로 켜기", variable=v_auto,
+                       font=f, bg="#fffaf7").pack(anchor="w", padx=16, pady=(4, 0))
+        tk.Checkbutton(top_f, text="별도 정각 알림창 사용 (직접 닫을 때까지 유지)", variable=v_hour_pop,
+                       font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+
+        # 평일 제외 시간대
+        f_mute = tk.Frame(top_f, bg="#fffaf7")
+        f_mute.pack(anchor="w", padx=16, pady=2)
+        tk.Checkbutton(f_mute, text="평일(월~금) 아래 시간에는 정각 알림 끄기", variable=v_work_mute,
+                       font=f, bg="#fffaf7").pack(anchor="w")
+        
+        f_span = tk.Frame(top_f, bg="#fffaf7")
+        f_span.pack(anchor="w", padx=36, pady=2)
+        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_start).pack(side="left")
+        tk.Label(f_span, text="시 ~ ", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_end).pack(side="left")
+        tk.Label(f_span, text="시 (양 끝 정각 포함)", font=f, bg="#fffaf7").pack(side="left", padx=4)
+
+        # 미리보기 버튼 행
+        f_prev = tk.Frame(top_f, bg="#fffaf7")
+        f_prev.pack(fill="x", padx=20, pady=4)
+        tk.Label(f_prev, text="9~18 설정: 평일 09~18시 제외, 주말은 알림", font=(FONT, 8), fg="#777", bg="#fffaf7").pack(side="left")
+        tk.Button(f_prev, text="정각창 미리보기", font=(FONT, 8),
+                  command=lambda: self.trigger_custom_alert("정각 알림", "11:00", "오전 11시야!\n(미리보기)")).pack(side="right")
+
+        # 2. 테두리 빛 효과 블록
+        tk.Checkbutton(top_f, text="알림창을 닫을 때까지 화면 가장자리 빛 유지", variable=v_glow,
+                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(8, 2))
+        
+        f_gopt1 = tk.Frame(top_f, bg="#fffaf7")
+        f_gopt1.pack(anchor="w", padx=24, pady=2)
+        tk.Label(f_gopt1, text="빛 색상", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Combobox(f_gopt1, textvariable=v_glow_col, values=["피치·핑크·보라·하늘", "단색 네온", "골드 웜"],
+                     state="readonly", width=18).pack(side="left", padx=8)
+
+        f_gopt2 = tk.Frame(top_f, bg="#fffaf7")
+        f_gopt2.pack(anchor="w", padx=24, pady=2)
+        tk.Label(f_gopt2, text="퍼지는 폭", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Combobox(f_gopt2, textvariable=v_glow_w, values=["보통", "넓게"], state="readonly", width=8).pack(side="left", padx=6)
+        tk.Label(f_gopt2, text="진하기", font=f, bg="#fffaf7").pack(side="left", padx=(10, 0))
+        ttk.Combobox(f_gopt2, textvariable=v_glow_i, values=["은은하게", "선명하게"], state="readonly", width=8).pack(side="left", padx=6)
+
+        # 3. 점심 알림
+        f_l = tk.Frame(top_f, bg="#fffaf7")
+        f_l.pack(fill="x", pady=(10, 2))
+        tk.Checkbutton(f_l, text="점심 알림", variable=v_lunch, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        tk.Label(f_l, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
+        tk.Entry(f_l, textvariable=v_lunch_t, width=8, font=f).pack(side="left")
+        
+        f_lm = tk.Frame(top_f, bg="#fffaf7")
+        f_lm.pack(fill="x", padx=24, pady=2)
+        tk.Label(f_lm, text="문구", font=f, bg="#fffaf7").pack(side="left")
+        tk.Entry(f_lm, textvariable=v_lunch_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
+
+        # 4. 퇴근 알림
+        f_lv = tk.Frame(top_f, bg="#fffaf7")
+        f_lv.pack(fill="x", pady=(10, 2))
+        tk.Checkbutton(f_lv, text="퇴근 알림", variable=v_leave, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        tk.Label(f_lv, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
+        tk.Entry(f_lv, textvariable=v_leave_t, width=8, font=f).pack(side="left")
+
+        f_lvm = tk.Frame(top_f, bg="#fffaf7")
+        f_lvm.pack(fill="x", padx=24, pady=2)
+        tk.Label(f_lvm, text="문구", font=f, bg="#fffaf7").pack(side="left")
+        tk.Entry(f_lvm, textvariable=v_leave_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
+
+        # 5. 낮잠 알림
+        f_nap = tk.Frame(top_f, bg="#fffaf7")
+        f_nap.pack(anchor="w", pady=(8, 2))
+        tk.Checkbutton(f_nap, text="낮잠", variable=v_nap, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_nap, from_=1, to=120, width=5, textvariable=v_nap_m).pack(side="left", padx=6)
+        tk.Label(f_nap, text="분 동안 입력이 없으면 잠들어요", font=f, bg="#fffaf7").pack(side="left")
+        
+        tk.Label(top_f, text="시간은 12:00처럼 시:분으로 적어 주세요.", font=(FONT, 8), fg="#888", bg="#fffaf7").pack(anchor="w", pady=(4, 8))
+
+        # 하단 버튼 바
+        btn_bar = tk.Frame(w, bg="#fffaf7")
+        btn_bar.pack(fill="x", padx=16, pady=(0, 16))
+        
+        tk.Button(btn_bar, text="점심 미리보기", font=f,
+                  command=lambda: self.trigger_custom_alert("점심 알림", v_lunch_t.get(), v_lunch_m.get())).pack(side="left", padx=2)
+        tk.Button(btn_bar, text="퇴근 미리보기", font=f,
+                  command=lambda: self.trigger_custom_alert("퇴근 알림", v_leave_t.get(), v_leave_m.get())).pack(side="left", padx=2)
+
+        def save_alert_settings():
+            s["notify_hour"] = v_hour.get()
+            s["autostart"] = v_auto.get()
+            set_autostart(v_auto.get())
+            s["notify_hour_popup"] = v_hour_pop.get()
+            s["work_hour_mute"] = v_work_mute.get()
+            try:
+                s["work_mute_start"] = int(v_m_start.get())
+                s["work_mute_end"] = int(v_m_end.get())
+            except Exception: pass
+            s["glow_edge"] = v_glow.get()
+            s["glow_color"] = v_glow_col.get()
+            s["glow_width"] = v_glow_w.get()
+            s["glow_intensity"] = v_glow_i.get()
+            s["notify_lunch"] = v_lunch.get()
+            s["lunch_time"] = v_lunch_t.get().strip()
+            s["lunch_msg"] = v_lunch_m.get().strip()
+            s["notify_leave"] = v_leave.get()
+            s["leave_time"] = v_leave_t.get().strip()
+            s["leave_msg"] = v_leave_m.get().strip()
+            s["idle_nap_min"] = int(v_nap_m.get())
+            self.save()
+            w.destroy()
+
+        tk.Button(btn_bar, text="취소", font=f, width=6, command=w.destroy).pack(side="right", padx=3)
+        tk.Button(btn_bar, text="저장", font=f, width=6, bg="#e9ecef", command=save_alert_settings).pack(side="right", padx=3)
+
+    # ------------------------------------------------ 설정 UI 2: 움직임과 반응 (사진 2)
+    def open_motion(self):
+        w = self.dialog("motion", "전주치이카와 · 움직임과 반응", 420, 680)
+        if w is None: return
+        f = (FONT, 9)
+        s = self.s
+
+        v_wall = tk.BooleanVar(value=s["allow_wall"])
+        v_ceil = tk.BooleanVar(value=s["allow_ceil"])
+        v_win = tk.BooleanVar(value=s["allow_window"])
+        v_sit = tk.BooleanVar(value=s["allow_sit"])
+        v_short_sit = tk.BooleanVar(value=s["short_sit"])
+        v_flee = tk.BooleanVar(value=s["flee_mouse"])
+        v_follow = tk.BooleanVar(value=s["follow_mouse"])
+        v_safe = tk.BooleanVar(value=s["safe_mode"])
+        v_work_safe = tk.BooleanVar(value=s["work_safe_mode"])
+        v_fullscreen = tk.BooleanVar(value=s["auto_hide_fullscreen"])
+        v_show_inti = tk.BooleanVar(value=s["show_inti"])
+        v_lock = tk.BooleanVar(value=s["locked"])
+        
+        v_op = tk.IntVar(value=s.get("opacity", 100))
+        v_spd_walk = tk.DoubleVar(value=s.get("spd_walk", 2.0))
+        v_spd_spin = tk.DoubleVar(value=s.get("spd_spin", 3.0))
+        v_spd_slide = tk.DoubleVar(value=s.get("spd_slide", 3.0))
+        v_slide_d = tk.DoubleVar(value=s.get("slide_delay", 0.12))
+        v_cr = tk.StringVar(value=s["click_reaction"])
+
+        # 스크롤 가능한 컨테이너
+        top_f = tk.Frame(w, bg="#fffaf7")
+        top_f.pack(fill="both", expand=True, padx=16, pady=12)
+
+        tk.Label(top_f, text="친구가 어떻게 놀지 골라줘", font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(0, 4))
+        
+        checks = [
+            ("화면 양옆 벽 타기", v_wall),
+            ("화면 천장 타기", v_ceil),
+            ("열린 창 옆을 올라가고 창 위에서 걷기 · 쉬기", v_win),
+            ("혼자 앉아서 쉬기", v_sit),
+            ("앉아있는 시간 줄이기 (기존 6~11초)", v_short_sit),
+            ("커서가 가까이 오면 슬라이딩으로 도망가기", v_flee),
+            ("커서를 따라오기", v_follow),
+            ("얌전 모드: 바닥에만 머물고 도망가지 않기", v_safe),
+            ("평일 09:00~18:00에는 자동으로 얌전 모드", v_work_safe),
+            ("전체화면 영상 · 게임을 볼 때 자동으로 숨기기", v_fullscreen),
+            ("친구 옆에 친밀도 숫자 표시", v_show_inti),
+            ("친구 위치 고정 (마우스로 옮길 수 있어요)", v_lock),
+        ]
+        for txt, var in checks:
+            tk.Checkbutton(top_f, text=txt, variable=var, font=f, bg="#fffaf7").pack(anchor="w", pady=1)
+
+        # 캐릭터 진하기 (투명도)
+        f_op = tk.Frame(top_f, bg="#fffaf7")
+        f_op.pack(anchor="w", pady=(8, 2))
+        tk.Label(f_op, text="캐릭터 진하기", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_op, from_=10, to=100, width=5, textvariable=v_op).pack(side="left", padx=6)
+        tk.Label(f_op, text="% · 낮을수록 투명해요", font=(FONT, 8), fg="#777", bg="#fffaf7").pack(side="left")
+
+        # 속도 조절 라벨
+        tk.Label(top_f, text="속도 조절 · 숫자가 클수록 빨라져요", font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(10, 2))
+
+        speeds = [
+            ("걷기 · 기어오르기", v_spd_walk),
+            ("헬리콥터 낙하", v_spd_spin),
+            ("슬라이딩", v_spd_slide),
+        ]
+        for txt, var in speeds:
+            fr_sp = tk.Frame(top_f, bg="#fffaf7")
+            fr_sp.pack(fill="x", pady=2)
+            tk.Label(fr_sp, text=txt, font=f, width=16, anchor="w", bg="#fffaf7").pack(side="left")
+            ttk.Spinbox(fr_sp, from_=0.5, to=10.0, increment=0.5, width=6, textvariable=var).pack(side="left", padx=6)
+            tk.Label(fr_sp, text="배", font=f, bg="#fffaf7").pack(side="left")
+
+        f_sd = tk.Frame(top_f, bg="#fffaf7")
+        f_sd.pack(fill="x", pady=(6, 2))
+        tk.Label(f_sd, text="슬라이딩 반응 대기", font=f, width=16, anchor="w", bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_sd, from_=0.01, to=1.0, increment=0.01, width=6, textvariable=v_slide_d).pack(side="left", padx=6)
+        tk.Label(f_sd, text="초", font=f, bg="#fffaf7").pack(side="left")
+
+        # 클릭했을 때 반응
+        f_cr = tk.Frame(top_f, bg="#fffaf7")
+        f_cr.pack(anchor="w", pady=(8, 12))
+        tk.Label(f_cr, text="클릭했을 때 반응", font=f, bg="#fffaf7").pack(side="left", padx=(0, 6))
+        ttk.Combobox(f_cr, textvariable=v_cr, values=["폴짝", "울기", "어질어질", "랜덤"], state="readonly", width=10).pack(side="left")
+
+        # 하단 저장 / 취소 버튼 바
+        btn_bar = tk.Frame(w, bg="#fffaf7")
+        btn_bar.pack(fill="x", padx=16, pady=(0, 14))
+
+        def save_motion_settings():
+            s["allow_wall"] = v_wall.get()
+            s["allow_ceil"] = v_ceil.get()
+            s["allow_window"] = v_win.get()
+            s["allow_sit"] = v_sit.get()
+            s["short_sit"] = v_short_sit.get()
+            s["flee_mouse"] = v_flee.get()
+            s["follow_mouse"] = v_follow.get()
+            s["safe_mode"] = v_safe.get()
+            s["work_safe_mode"] = v_work_safe.get()
+            s["auto_hide_fullscreen"] = v_fullscreen.get()
+            s["show_inti"] = v_show_inti.get()
+            s["locked"] = v_lock.get()
+            self.lock_var.set(v_lock.get())
+            self.safe_var.set(v_safe.get())
+            
+            try:
+                s["opacity"] = int(v_op.get())
+                s["spd_walk"] = float(v_spd_walk.get())
+                s["spd_spin"] = float(v_spd_spin.get())
+                s["spd_slide"] = float(v_spd_slide.get())
+                s["slide_delay"] = float(v_slide_d.get())
+            except Exception: pass
+            
+            s["click_reaction"] = v_cr.get()
+            self.apply_opacity()
+            self.sync_flags()
+            w.destroy()
+
+        tk.Button(btn_bar, text="취소", font=f, width=7, command=w.destroy).pack(side="right", padx=4)
+        tk.Button(btn_bar, text="저장", font=f, width=7, bg="#e9ecef", command=save_motion_settings).pack(side="right", padx=4)
+
+    # ------------------------------------------------ 설정 UI 3: 친구 기록 / 도우미
     def open_record(self):
         w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
-        if w is None:
-            return
+        if w is None: return
         f = (FONT, 10)
         big = tk.Label(w, font=(FONT, 16, "bold"), bg="#fffaf7")
         big.pack(anchor="w", padx=20, pady=(18, 4))
         info = tk.Label(w, font=f, bg="#fffaf7", justify="left")
         info.pack(anchor="w", padx=20)
-        tk.Button(w, text="간식 주기", font=f, command=lambda: self.feed()).pack(
-            anchor="w", padx=20, pady=8)
-        tk.Label(w, text="생활 설정", font=(FONT, 10, "bold"), bg="#fffaf7").pack(
-            anchor="w", padx=20, pady=(6, 0))
+        tk.Button(w, text="간식 주기", font=f, command=lambda: self.feed()).pack(anchor="w", padx=20, pady=8)
+        tk.Label(w, text="생활 설정", font=(FONT, 10, "bold"), bg="#fffaf7").pack(anchor="w", padx=20, pady=(6, 0))
         tk.Label(w, text=f"간식은 포만감 +{self.s['snack']}씩, 최대 100까지 채워줘요.\n"
-                         "함께한 시간 1분마다 친밀도도 1씩 쌓여요.",
-                 font=f, bg="#fffaf7", justify="left").pack(anchor="w", padx=20)
+                         "함께한 시간 1분마다 친밀도도 1씩 쌓여요.", font=f, bg="#fffaf7", justify="left").pack(anchor="w", padx=20)
         row = tk.Frame(w, bg="#fffaf7")
         row.pack(anchor="w", padx=20, pady=8)
         tk.Label(row, text="간식 없이 배고파지기까지", font=f, bg="#fffaf7").pack(side="left")
@@ -1046,31 +1477,26 @@ class Game:
         tk.Label(row, text="분", font=f, bg="#fffaf7").pack(side="left")
         cv_ = tk.BooleanVar(value=self.s["cry_always"])
         hr_ = tk.BooleanVar(value=self.s["hidden_reactions"])
-        tk.Checkbutton(w, text="배고프면 계속 우는 모습", variable=cv_, font=f,
-                       bg="#fffaf7").pack(anchor="w", padx=16)
-        tk.Checkbutton(w, text="숨겨진 반응 사용", variable=hr_, font=f,
-                       bg="#fffaf7").pack(anchor="w", padx=16)
+        tk.Checkbutton(w, text="배고프면 계속 우는 모습", variable=cv_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+        tk.Checkbutton(w, text="숨겨진 반응 사용", variable=hr_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
 
         def apply():
             try:
                 self.s["hunger_min"] = max(0, int(hv.get()))
-            except Exception:
-                pass
+            except Exception: pass
             self.s["cry_always"] = cv_.get()
             self.s["hidden_reactions"] = hr_.get()
             self.save()
             msg.config(text="저장했어요!")
 
-        tk.Button(w, text="생활 설정 저장", font=f, command=apply).pack(
-            anchor="w", padx=20, pady=8)
+        tk.Button(w, text="생활 설정 저장", font=f, command=apply).pack(anchor="w", padx=20, pady=8)
         msg = tk.Label(w, text="", font=(FONT, 9), bg="#fffaf7", fg="#2a7")
         msg.pack(anchor="w", padx=20)
         sec = tk.Label(w, font=f, bg="#fffaf7", justify="left", wraplength=390)
         sec.pack(anchor="w", padx=20, pady=(10, 0))
 
         def refresh():
-            if not w.winfo_exists():
-                return
+            if not w.winfo_exists(): return
             big.config(text=f"♥ 친밀도 {self.inti}   ·   함께 {self.mins}분")
             nm = self.next_milestone()
             info.config(text=f"포만감 {int(self.sat)} / 100\n"
@@ -1084,78 +1510,13 @@ class Game:
 
         refresh()
 
-    def open_motion(self):
-        w = self.dialog("motion", "움직임 · 반응 설정", 400, 520)
-        if w is None:
-            return
-        f = (FONT, 10)
-        s = self.s
-        sp = tk.IntVar(value=s["speed"])
-        ac = tk.IntVar(value=s["activity"])
-        sz = tk.IntVar(value=s["size"])
-        for text, var, lo, hi in (("움직임 속도", sp, 1, 8), ("활동량", ac, 1, 10),
-                                  ("크기", sz, 80, 240)):
-            tk.Label(w, text=text, font=f, bg="#fffaf7").pack(anchor="w", padx=20, pady=(12, 0))
-            tk.Scale(w, from_=lo, to=hi, orient="horizontal", variable=var,
-                     length=340, bg="#fffaf7", highlightthickness=0).pack(padx=20)
-        tk.Label(w, text="클릭했을 때 반응", font=f, bg="#fffaf7").pack(anchor="w", padx=20, pady=(12, 0))
-        cr = tk.StringVar(value=s["click_reaction"])
-        ttk.Combobox(w, textvariable=cr, values=["폴짝", "울기", "어질어질", "랜덤"],
-                     state="readonly", width=12).pack(anchor="w", padx=20)
-        aw = tk.BooleanVar(value=s["allow_wall"])
-        awin = tk.BooleanVar(value=s["allow_window"])
-        hr = tk.BooleanVar(value=s["hidden_reactions"])
-        for text, var in (("벽 · 천장 타기 허용", aw), ("창 타기 허용 (다른 프로그램 창 위로 올라가요)", awin),
-                          ("숨겨진 반응 사용", hr)):
-            tk.Checkbutton(w, text=text, variable=var, font=f, bg="#fffaf7").pack(
-                anchor="w", padx=16, pady=(6, 0))
-
-        def apply():
-            old = s["size"]
-            s.update(speed=sp.get(), activity=ac.get(), size=sz.get(),
-                     click_reaction=cr.get(), allow_wall=aw.get(),
-                     allow_window=awin.get(), hidden_reactions=hr.get())
-            if s["size"] != old:
-                self.apply_size()
-            self.save()
-            msg.config(text="적용했어요!")
-
-        tk.Button(w, text="적용", font=f, command=apply).pack(anchor="w", padx=20, pady=14)
-        msg = tk.Label(w, text="", font=(FONT, 9), bg="#fffaf7", fg="#2a7")
-        msg.pack(anchor="w", padx=20)
-
-    def open_notify(self):
-        w = self.dialog("notify", "알림 설정", 360, 240)
-        if w is None:
-            return
-        f = (FONT, 10)
-        s = self.s
-        a = tk.BooleanVar(value=s["notify_hungry"])
-        b = tk.BooleanVar(value=s["notify_hour"])
-        c = tk.BooleanVar(value=s["sound"])
-        for text, var in (("배고플 때 말풍선으로 알려주기", a), ("정각마다 시간 알려주기", b),
-                          ("타이머가 끝나면 소리 내기", c)):
-            tk.Checkbutton(w, text=text, variable=var, font=f, bg="#fffaf7").pack(
-                anchor="w", padx=16, pady=(10, 0))
-
-        def apply():
-            s.update(notify_hungry=a.get(), notify_hour=b.get(), sound=c.get())
-            self.save()
-            msg.config(text="저장했어요!")
-
-        tk.Button(w, text="저장", font=f, command=apply).pack(anchor="w", padx=20, pady=14)
-        msg = tk.Label(w, text="", font=(FONT, 9), bg="#fffaf7", fg="#2a7")
-        msg.pack(anchor="w", padx=20)
-
     def open_helper(self):
         w = self.dialog("helper", "도우미 · 할 일 · 메모 · 타이머", 440, 520)
-        if w is None:
-            return
+        if w is None: return
         f = (FONT, 10)
         nb = ttk.Notebook(w)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # 할 일
         t1 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t1, text="할 일")
         row = tk.Frame(t1, bg="#fffaf7")
@@ -1198,7 +1559,6 @@ class Game:
         tk.Button(bt, text="삭제", font=f, command=delete).pack(side="left", padx=4)
         draw()
 
-        # 메모
         t2 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t2, text="메모")
         txt = tk.Text(t2, font=f, wrap="word", height=18)
@@ -1213,7 +1573,6 @@ class Game:
         tk.Button(t2, text="저장", font=f, command=save_memo).pack(pady=(0, 8))
         w.protocol("WM_DELETE_WINDOW", lambda: (save_memo(), w.destroy()))
 
-        # 타이머
         t3 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t3, text="타이머")
         r3 = tk.Frame(t3, bg="#fffaf7")
@@ -1227,8 +1586,7 @@ class Game:
         def start_t():
             try:
                 self.timer_end = time.time() + max(1, int(mv.get())) * 60
-            except Exception:
-                pass
+            except Exception: pass
 
         def cancel_t():
             self.timer_end = 0
@@ -1237,12 +1595,10 @@ class Game:
         b3.pack()
         tk.Button(b3, text="시작", font=f, command=start_t).pack(side="left", padx=4)
         tk.Button(b3, text="취소", font=f, command=cancel_t).pack(side="left", padx=4)
-        tk.Label(t3, text="끝나면 친구가 폴짝 뛰면서 알려줘요.", font=(FONT, 9),
-                 bg="#fffaf7", fg="#666").pack(pady=14)
+        tk.Label(t3, text="끝나면 친구가 폴짝 뛰면서 알려줘요.", font=(FONT, 9), bg="#fffaf7", fg="#666").pack(pady=14)
 
         def tick_t():
-            if not w.winfo_exists():
-                return
+            if not w.winfo_exists(): return
             if self.timer_end:
                 left = max(0, int(self.timer_end - time.time()))
                 remain.config(text=f"{left // 60:02d}:{left % 60:02d}")
