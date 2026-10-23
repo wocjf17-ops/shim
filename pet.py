@@ -1415,8 +1415,9 @@ class Game:
                             gemini_contents.append({"role": gemini_role, "parts": [{"text": item["parts"]}]})
 
                         payload = {
-                            "system_instruction": {"parts": [{"text": system_instruction_text}]},
-                            "contents": gemini_contents
+                           "system_instruction": {"parts": [{"text": system_instruction_text}]},
+                           "contents": gemini_contents,
+                           "tools": [{"google_search": {}}]
                         }
                         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
                         with urllib.request.urlopen(req, timeout=15) as res:
