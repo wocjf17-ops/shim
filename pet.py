@@ -1,13 +1,13 @@
 """
-바탕화면 펫 프로그램 (확장 버전)
-- 고양이 / 강아지 실제 사진 기반 자연스러운 물리 동작
-- 커스텀 알림창 (정각, 점심, 퇴근) & 화면 가장자리 빛(Glow) 효과
-- 세부 움직임 조절 (슬라이딩 도망, 커서 따라오기, 근무시간 얌전 모드, 전체화면 자동 숨기기)
-- Windows 시작 프로그램 등록 및 설정 창 완벽 대응
+바탕화면 펫 프로그램 (OpenPets 지능형 에이전트 확장 버전)
+- 고양이 / 강아지 실제 사진 기반 물리 엔진 & 화면 벽/천장/외부 창 타기
+- OpenPets 기능 1: 현재 활성 창(유튜브, 코딩, 문서 등) 실시간 감지 및 맞춤 행동
+- OpenPets 기능 2: AI 채팅으로 도구 실행(타이머 맞추기, 할 일 자동 등록, 모션 명령)
+- 정각/점심/퇴근 알림, 화면 테두리 빛 효과, Ollama/Gemini/Claude 다중 엔진 지원
 """
 import tkinter as tk
 from tkinter import ttk
-import json, os, sys, time, random, math, ctypes
+import json, os, sys, time, random, math, ctypes, threading, urllib.request
 from PIL import Image, ImageTk
 
 WIN = sys.platform == "win32"
@@ -33,16 +33,14 @@ def res(name):
 
 SAVE = os.path.join(base_dir(), "pet_save.json")
 
-# 확장된 기본 설정값
 DEFAULTS = {
-    # 기본
     "speed": 3, "activity": 5, "size": 140, "opacity": 100,
     "click_reaction": "폴짝", "hunger_min": 60, "snack": 25,
     "cry_always": False, "hidden_reactions": True,
     "locked": False, "safe_mode": False,
     "show_inti": False, "idle_nap_min": 10,
     
-    # 움직임 세부 설정 (사진 2)
+    # 동작 상세 설정
     "allow_wall": True, "allow_ceil": True, "allow_window": True,
     "allow_sit": True, "short_sit": False,
     "flee_mouse": True, "follow_mouse": False,
@@ -50,19 +48,14 @@ DEFAULTS = {
     "spd_walk": 2.0, "spd_spin": 3.0, "spd_slide": 3.0,
     "slide_delay": 0.12,
 
-    # 알림 및 자동 시작 설정 (사진 1)
-    "autostart": False,
-    "notify_hour_popup": True,
-    "work_hour_mute": False,
-    "work_mute_start": 9, "work_mute_end": 18,
-    "glow_edge": True,
-    "glow_color": "피치·핑크·보라·하늘",
-    "glow_width": "넓게",
-    "glow_intensity": "선명하게",
+    # 알림 및 자동 시작
+    "autostart": False, "notify_hour_popup": True,
+    "work_hour_mute": False, "work_mute_start": 9, "work_mute_end": 18,
+    "glow_edge": True, "glow_color": "피치·핑크·보라·하늘",
+    "glow_width": "넓게", "glow_intensity": "선명하게",
     
     "notify_lunch": True, "lunch_time": "12:00", "lunch_msg": "점심 먹으러 가자!",
     "notify_leave": True, "leave_time": "18:00", "leave_msg": "퇴근이다! 오늘도 수고했어",
-    
     "notify_hungry": True, "notify_hour": True, "sound": True,
 }
 
@@ -72,7 +65,31 @@ SECRETS = {
     "tickle": ("간지럼", "친구를 빠르게 5번 클릭하기"),
 }
 
-# Windows 레지스트리 / 창 제어 API
+# ------------------------------------------------ 시스템 프롬프트 (OpenPets 에이전트 스킬 장착)
+PERSONA_PROMPTS = {
+    "고양이": (
+        "너는 사용자의 바탕화면에 살고 있는 고양이 데스크톱 펫이자 비서야.\n"
+        "- 모든 문장의 어미를 '~냥', '~다냥', '~냐옹?'으로 끝마쳐줘.\n"
+        "- 조금 도도하지만 주인을 좋아하며 친절하게 답해줘.\n"
+        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성해줘.\n"
+        "- [도구 사용 지침]:\n"
+        "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
+        "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
+        "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
+    ),
+    "강아지": (
+        "너는 사용자의 바탕화면에 살고 있는 밝고 충직한 강아지 데스크톱 펫이자 비서야!\n"
+        "- 모든 문장의 어미를 '~멍!', '~했멍!', '~멍?'으로 끝마쳐줘.\n"
+        "- 애교가 넘치고 주인을 든든히 지키며 응원해줘.\n"
+        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성해줘.\n"
+        "- [도구 사용 지침]:\n"
+        "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
+        "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
+        "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
+    )
+}
+
+# ------------------------------------------------ Win32 API
 if WIN:
     user32 = ctypes.windll.user32
     try:
@@ -88,10 +105,25 @@ if WIN:
     user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
     user32.IsIconic.argtypes = [ctypes.c_void_p]
     user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
     user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
     user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
     user32.GetForegroundWindow.restype = ctypes.c_void_p
+
+def get_foreground_window_title():
+    """현재 활성화되어 작업 중인 최상위 창 제목 가져오기"""
+    if not WIN: return ""
+    try:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd: return ""
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0: return ""
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+    except Exception:
+        return ""
 
 def set_autostart(enable=True):
     if not WIN: return
@@ -102,10 +134,8 @@ def set_autostart(enable=True):
         if enable:
             winreg.SetValueEx(key, "DesktopPetApp", 0, winreg.REG_SZ, f'"{app_path}"')
         else:
-            try:
-                winreg.DeleteValue(key, "DesktopPetApp")
-            except FileNotFoundError:
-                pass
+            try: winreg.DeleteValue(key, "DesktopPetApp")
+            except FileNotFoundError: pass
         winreg.CloseKey(key)
     except Exception:
         pass
@@ -178,7 +208,7 @@ def window_rect(hwnd):
     except Exception:
         return None
 
-# ---------------------------------------------------------------- 화면 테두리 빛 (Glow Effect)
+# ------------------------------------------------ 화면 가장자리 빛 (Edge Glow)
 class EdgeGlowWindow:
     def __init__(self, root):
         self.root = root
@@ -190,11 +220,9 @@ class EdgeGlowWindow:
         except tk.TclError:
             pass
         self.win.config(bg=KEY)
-        
         self.sw = root.winfo_screenwidth()
         self.sh = root.winfo_screenheight()
         self.win.geometry(f"{self.sw}x{self.sh}+0+0")
-        
         self.cv = tk.Canvas(self.win, width=self.sw, height=self.sh, bg=KEY, highlightthickness=0)
         self.cv.pack(fill="both", expand=True)
         self.win.withdraw()
@@ -202,37 +230,32 @@ class EdgeGlowWindow:
     def show(self, palette_mode="피치·핑크·보라·하늘", width_mode="넓게"):
         self.cv.delete("all")
         glow_thick = 24 if width_mode == "넓게" else 14
-        
-        # 그라데이션 및 색상 밴드 구성
         colors = ["#ff9aa2", "#ffb7b2", "#ffdac1", "#e2f0cb", "#b5ead7", "#c7ceea"]
         steps = glow_thick // 2
         for i in range(steps):
             c = colors[i % len(colors)]
             pad = i * 2
             self.cv.create_rectangle(pad, pad, self.sw - pad, self.sh - pad, outline=c, width=2)
-            
         self.win.deiconify()
         self.win.attributes("-topmost", True)
 
     def hide(self):
         self.win.withdraw()
 
-# ---------------------------------------------------------------- 별도 알림창 (사진 1)
+# ------------------------------------------------ 정각/점심/퇴근 커스텀 팝업
 class CustomAlertPopup:
     def __init__(self, root, on_close=None):
         self.root = root
         self.on_close = on_close
         self.win = tk.Toplevel(root)
-        self.win.title("정각 알림")
+        self.win.title("알림")
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.config(bg="#f8f9fa")
         
-        # 둥근 카드 모양 프레임
         f = tk.Frame(self.win, bg="#ffffff", bd=1, relief="solid")
         f.pack(fill="both", expand=True, padx=4, pady=4)
         
-        # 닫기 (X)
         top_bar = tk.Frame(f, bg="#ffffff")
         top_bar.pack(fill="x", padx=12, pady=(10, 0))
         tk.Label(top_bar, text="알림", font=(FONT, 9, "bold"), bg="#ffffff", fg="#666666").pack(side="left")
@@ -246,7 +269,7 @@ class CustomAlertPopup:
         self.lbl_time = tk.Label(f, text="11:00", font=(FONT, 38, "bold"), bg="#ffffff", fg="#222222")
         self.lbl_time.pack(anchor="w", padx=14, pady=2)
         
-        self.lbl_sub = tk.Label(f, text="오전 11시야!\n(미리보기)", font=(FONT, 10), bg="#ffffff", fg="#555555", justify="left")
+        self.lbl_sub = tk.Label(f, text="", font=(FONT, 10), bg="#ffffff", fg="#555555", justify="left")
         self.lbl_sub.pack(anchor="w", padx=18, pady=(0, 16))
         
         btn = tk.Button(f, text="확인했어", font=(FONT, 10, "bold"), bg="#2d3238", fg="#ffffff",
@@ -258,11 +281,8 @@ class CustomAlertPopup:
         self.lbl_title.config(text=title)
         self.lbl_time.config(text=time_str)
         self.lbl_sub.config(text=sub_text)
-        
         w, h = 300, 220
-        sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
-        # 화면 좌측 상단 살짝 안쪽에 띄우기
         self.win.geometry(f"{w}x{h}+60+{sh // 4}")
         self.win.deiconify()
         self.win.attributes("-topmost", True)
@@ -272,7 +292,7 @@ class CustomAlertPopup:
         if self.on_close:
             self.on_close()
 
-# ---------------------------------------------------------------- 펫 한 마리
+# ------------------------------------------------ 펫 한 마리 (Pet)
 class Pet:
     def __init__(self, g, idx):
         self.g, self.idx = g, idx
@@ -400,7 +420,6 @@ class Pet:
         if g.hungry() and random.random() < 0.55:
             return self.start("cry", kind="hungry")
             
-        # 평일 얌전 모드 확인
         work_safe = False
         if s["work_safe_mode"]:
             lt = time.localtime()
@@ -461,6 +480,11 @@ class Pet:
         g = self.g
         m = tk.Menu(self.win, tearoff=0, font=(FONT, 10))
         m.add_command(label=f"♥ 친밀도 {g.inti}  ·  함께 {g.mins}분", state="disabled")
+        
+        # --- AI 질문 메뉴 ---
+        m.add_command(label="✨ AI 비서에게 물어보기 (Gemini / Claude / Ollama)...", command=lambda: g.open_ai_chat(self))
+        m.add_separator()
+        
         m.add_command(label="친구 한 마리 더 부르기", command=g.add_pet)
         m.add_command(label="이 친구 보내기", command=lambda: g.remove_pet(self))
         m.add_command(label="모두 숨기기", command=g.hide_all)
@@ -499,7 +523,6 @@ class Pet:
         self.y = self.ground()
         sp = g.s["speed"] * (g.s["spd_walk"] / 2.0) * (0.6 if g.hungry() else 1.0)
         
-        # 커서 따라오기 모드
         if g.s["follow_mouse"]:
             px, _ = self.win.winfo_pointerxy()
             cx = self.x + g.W / 2
@@ -703,7 +726,7 @@ class Pet:
         now = time.time()
         self.fxk = set()
         
-        # 커서가 가까이 오면 슬라이딩으로 도망가기 로직 (사진 2)
+        # 커서 감지 도망
         if g.s["flee_mouse"] and self.act in ("idle", "walk", "sit") and now > self.flee_cooldown:
             px, py = self.win.winfo_pointerxy()
             cx, cy = self.x + g.W / 2, self.y + g.H / 2
@@ -735,7 +758,6 @@ class Pet:
         cx, fy = self.face(dx, dy)
         t = self.t
         
-        # 친밀도 숫자 상시 표시 (사진 2)
         if g.s["show_inti"]:
             cv.create_text(g.W // 2, g.H - g.ih - 10, text=f"♥ {g.inti}", fill="#ff4081",
                            font=(FONT, 9, "bold"), tags="fx")
@@ -813,7 +835,7 @@ ACT_MENU = [
     ("몰래 하는 군무", "dance", {}),
 ]
 
-# ---------------------------------------------------------------- 전체 관리 (Game)
+# ------------------------------------------------ 전체 관리자 (Game)
 class Game:
     def __init__(self):
         r = self.root = tk.Tk()
@@ -836,7 +858,11 @@ class Game:
         self.lock_var = tk.BooleanVar(value=self.s["locked"])
         self.safe_var = tk.BooleanVar(value=self.s["safe_mode"])
 
-        # 이미지 파일 로드
+        # AI 영구 저장 데이터 복원
+        self.ai_history = list(d.get("ai_history", []))
+        self.ai_persona = str(d.get("ai_persona", "고양이"))
+
+        # 이미지 로드
         self.photo_base = None
         target_name = None
         for cand in ["pet.png", "PET.PNG", "pet_2.png", "PET_2.PNG"]:
@@ -868,6 +894,7 @@ class Game:
         self.acc, self.last, self.tm = 0.0, time.time(), 0.0
         self.bouquet_until = 0
         self.timer_end = 0
+        self.timer_custom_msg = ""
         self.last_hour = -1
         self.last_min_check = -1
         self.last_hungry_note = 0
@@ -876,7 +903,10 @@ class Game:
         self.circ = {}
         self.restore_win = None
         
-        # 가장자리 빛 & 커스텀 알림 팝업 초기화
+        # 활성 창 컨텍스트 추적
+        self.last_fg_title = ""
+        self.fg_context_cooldown = 0
+        
         self.edge_glow = EdgeGlowWindow(r)
         self.alert_popup = CustomAlertPopup(r, on_close=self.on_alert_closed)
 
@@ -897,10 +927,8 @@ class Game:
     def apply_opacity(self):
         op = max(0.1, min(1.0, self.s.get("opacity", 100) / 100.0))
         for p in self.pets:
-            try:
-                p.win.attributes("-alpha", op)
-            except Exception:
-                pass
+            try: p.win.attributes("-alpha", op)
+            except Exception: pass
 
     def frame(self, angle=0, sx=1.0, sy=1.0, flip=False):
         a = int(round(angle / 4.0) * 4) % 360
@@ -926,8 +954,7 @@ class Game:
 
     def apply_size(self):
         self.set_size(self.s["size"])
-        for p in self.pets:
-            p.resize()
+        for p in self.pets: p.resize()
 
     def hungry(self):
         return self.s["hunger_min"] <= 0 or self.sat < 20
@@ -937,10 +964,14 @@ class Game:
         self.s["safe_mode"] = bool(self.safe_var.get())
         try:
             with open(SAVE, "w", encoding="utf-8") as f:
-                json.dump({"s": self.s, "sat": self.sat, "inti": self.inti,
-                           "mins": self.mins, "secrets": self.secrets,
-                           "todos": self.todos, "memo": self.memo,
-                           "pets": len(self.pets)}, f, ensure_ascii=False)
+                json.dump({
+                    "s": self.s, "sat": self.sat, "inti": self.inti,
+                    "mins": self.mins, "secrets": self.secrets,
+                    "todos": self.todos, "memo": self.memo,
+                    "pets": len(self.pets),
+                    "ai_history": self.ai_history,
+                    "ai_persona": getattr(self, "ai_persona", "고양이"),
+                }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -949,14 +980,12 @@ class Game:
         self.s["safe_mode"] = bool(self.safe_var.get())
         if self.s["safe_mode"]:
             for p in self.pets:
-                if p.act in ("wall", "ceil", "perch"):
-                    p.start("fall")
+                if p.act in ("wall", "ceil", "perch"): p.start("fall")
         self.save()
 
     def next_milestone(self):
         for m in MILESTONES:
-            if m > self.inti:
-                return m
+            if m > self.inti: return m
         return None
 
     def trigger_custom_alert(self, title, time_str, msg):
@@ -968,8 +997,7 @@ class Game:
                 import winsound
                 winsound.Beep(880, 200)
                 winsound.Beep(1320, 300)
-            except Exception:
-                pass
+            except Exception: pass
 
     def on_alert_closed(self):
         self.edge_glow.hide()
@@ -1007,8 +1035,7 @@ class Game:
             return
         self.pets.remove(pet)
         pet.win.destroy()
-        for i, p in enumerate(self.pets):
-            p.idx = i
+        for i, p in enumerate(self.pets): p.idx = i
         self.save()
 
     def gather(self):
@@ -1019,8 +1046,7 @@ class Game:
             p.say("여기 왔어요!", 1.5)
 
     def hide_all(self):
-        for p in self.pets:
-            p.win.withdraw()
+        for p in self.pets: p.win.withdraw()
         w = self.restore_win = tk.Toplevel(self.root)
         w.overrideredirect(True)
         w.attributes("-topmost", True)
@@ -1040,6 +1066,37 @@ class Game:
         self.save()
         self.root.destroy()
 
+    # ------------------------------------------------ OpenPets 기능 1: 활성 창 컨텍스트 감지
+    def check_active_context(self, now):
+        if not WIN or now < self.fg_context_cooldown:
+            return
+        self.fg_context_cooldown = now + 4.0  # 4초 주기 검사
+
+        title = get_foreground_window_title().lower()
+        if not title or title == self.last_fg_title:
+            return
+        self.last_fg_title = title
+        p = self.pets[0]
+
+        # 1) 영상 시청 감지 (유튜브, 넷플릭스 등)
+        video_keywords = ["youtube", "netflix", "치지직", "chzzk", "twitch", "동영상", "영화"]
+        if any(k in title for k in video_keywords):
+            p.start("sit")
+            p.say("쉿! 영화 보는 중이다냥/멍~", 2.5)
+            return
+
+        # 2) 코딩 및 개발 툴 감지 (VS Code, Cursor, Terminal 등)
+        coding_keywords = ["visual studio", "vscode", "pycharm", "intellij", "github", "cmd", "terminal"]
+        if any(k in title for k in coding_keywords):
+            p.say("코딩 집중 모드! 버그 다 잡아라냥/멍!", 2.5)
+            p.start("hop", n=1)
+            return
+
+        # 3) 문서 및 오피스 작업 감지
+        office_keywords = ["word", "excel", "powerpoint", "한글", "hwp", "스프레드시트"]
+        if any(k in title for k in office_keywords):
+            p.say("열일 모드다냥! 조금만 더 힘내!", 2.5)
+
     def loop(self):
         now = time.time()
         dt = min(1.0, now - self.last)
@@ -1047,7 +1104,10 @@ class Game:
         self.tm += dt
         s = self.s
 
-        # 전체화면 실행 감지 시 자동 숨기기 (사진 2)
+        # 활성 창 컨텍스트 체크
+        self.check_active_context(now)
+
+        # 전체화면 시 자동 숨기기
         if s["auto_hide_fullscreen"]:
             if is_fullscreen_app_active():
                 for p in self.pets:
@@ -1077,12 +1137,10 @@ class Game:
         if lt.tm_min != self.last_min_check:
             self.last_min_check = lt.tm_min
             
-            # 1) 정각 알림
+            # 정각 알림
             if lt.tm_min == 0 and lt.tm_hour != self.last_hour:
                 self.last_hour = lt.tm_hour
-                is_weekday = lt.tm_wday < 5
-                mute = s["work_hour_mute"] and is_weekday and (s["work_mute_start"] <= lt.tm_hour <= s["work_mute_end"])
-                
+                mute = s["work_hour_mute"] and (lt.tm_wday < 5) and (s["work_mute_start"] <= lt.tm_hour <= s["work_mute_end"])
                 if not mute:
                     ampm = "오전" if lt.tm_hour < 12 else "오후"
                     disp_h = lt.tm_hour if lt.tm_hour <= 12 else lt.tm_hour - 12
@@ -1092,11 +1150,11 @@ class Game:
                     elif s.get("notify_hour", True):
                         self.pets[0].say(f"{lt.tm_hour}시 정각이에요!", 4)
 
-            # 2) 점심 알림
+            # 점심 알림
             if s.get("notify_lunch", True) and cur_hm == s.get("lunch_time", "12:00"):
                 self.trigger_custom_alert("점심 알림", cur_hm, s.get("lunch_msg", "점심 먹으러 가자!"))
 
-            # 3) 퇴근 알림
+            # 퇴근 알림
             if s.get("notify_leave", True) and cur_hm == s.get("leave_time", "18:00"):
                 self.trigger_custom_alert("퇴근 알림", cur_hm, s.get("leave_msg", "퇴근이다! 오늘도 수고했어"))
 
@@ -1104,28 +1162,26 @@ class Game:
             self.last_hungry_note = now
             self.pets[0].say("배고파요… 간식 주세요", 4)
             
+        # 타이머 완료 시
         if self.timer_end and now >= self.timer_end:
             self.timer_end = 0
-            self.pets[0].say("⏰ 타이머 끝났어요!", 5)
-            for p in self.pets:
-                p.start("hop", n=3)
+            alert_msg = self.timer_custom_msg or "⏰ 타이머 끝났어요!"
+            self.pets[0].say(alert_msg, 5)
+            for p in self.pets: p.start("hop", n=3)
             if WIN and s["sound"]:
                 try:
                     import winsound
                     winsound.Beep(880, 300)
                     winsound.Beep(1175, 400)
-                except Exception:
-                    pass
+                except Exception: pass
 
         self.mouse_reactions(now, dt)
-        for p in list(self.pets):
-            p.update()
+        for p in list(self.pets): p.update()
         self.root.after(33, self.loop)
 
     def mouse_reactions(self, now, dt):
         s = self.s
-        if not s["hidden_reactions"]:
-            return
+        if not s["hidden_reactions"]: return
         px, py = self.root.winfo_pointerxy()
         moved = abs(px - self.lastp[0]) + abs(py - self.lastp[1])
         self.lastp = (px, py)
@@ -1136,22 +1192,18 @@ class Game:
             if self.dancing and moved > 20:
                 self.dancing = False
                 for p in self.pets:
-                    if p.act == "dance":
-                        p.start("idle")
+                    if p.act == "dance": p.start("idle")
                         
-        # 4초 가만히 있으면 군무
         if len(self.pets) >= 2 and self.still >= 4 and not self.dancing and now > self.dance_cool:
             self.dancing = True
             self.dance_cool = now + 30
             for p in self.pets:
-                if p.act in ("walk", "idle", "sit", "hop"):
-                    p.start("dance")
+                if p.act in ("walk", "idle", "sit", "hop"): p.start("dance")
             self.found("dance", self.pets[0])
 
         if self.dancing and not any(p.act == "dance" for p in self.pets):
             self.dancing = False
 
-        # 마우스 뺑뺑이(spin) 감지
         for p in self.pets:
             hx = p.x + self.W / 2
             hy = p.y + self.H - self.ih * 0.64
@@ -1185,158 +1237,305 @@ class Game:
         self.wins[key] = w
         return w
 
-    # ------------------------------------------------ 설정 UI 1: 자동 시작 / 알림 설정 (사진 1)
-    def open_notify(self):
-        w = self.dialog("notify", "전주치이카와 · 자동 시작 / 알림 설정", 460, 680)
+    # ------------------------------------------------ OpenPets 기능 2: AI 대화 & 도구 실행 (Tool Calling)
+    def open_ai_chat(self, pet=None):
+        w = self.dialog("ai_chat", "✨ 펫 AI 에이전트 (OpenPets Tool Calling)", 520, 580)
         if w is None: return
-        f = (FONT, 9)
-        s = self.s
+        f = (FONT, 10)
+        target_pet = pet or self.pets[0]
 
-        v_hour = tk.BooleanVar(value=s["notify_hour"])
-        v_auto = tk.BooleanVar(value=s["autostart"])
-        v_hour_pop = tk.BooleanVar(value=s["notify_hour_popup"])
-        v_work_mute = tk.BooleanVar(value=s["work_hour_mute"])
-        v_m_start = tk.IntVar(value=s["work_mute_start"])
-        v_m_end = tk.IntVar(value=s["work_mute_end"])
-        
-        v_glow = tk.BooleanVar(value=s["glow_edge"])
-        v_glow_col = tk.StringVar(value=s["glow_color"])
-        v_glow_w = tk.StringVar(value=s["glow_width"])
-        v_glow_i = tk.StringVar(value=s["glow_intensity"])
-        
-        v_lunch = tk.BooleanVar(value=s["notify_lunch"])
-        v_lunch_t = tk.StringVar(value=s["lunch_time"])
-        v_lunch_m = tk.StringVar(value=s["lunch_msg"])
-        
-        v_leave = tk.BooleanVar(value=s["notify_leave"])
-        v_leave_t = tk.StringVar(value=s["leave_time"])
-        v_leave_m = tk.StringVar(value=s["leave_msg"])
-        
-        v_nap = tk.BooleanVar(value=True)
-        v_nap_m = tk.IntVar(value=s.get("idle_nap_min", 10))
-
-        # 메인 컨테이너
         top_f = tk.Frame(w, bg="#fffaf7")
-        top_f.pack(fill="both", expand=True, padx=16, pady=12)
-
-        # 1. 정각 알림 블록
-        tk.Checkbutton(top_f, text="정각 알림 (매시간 현재 시각 알려주기)", variable=v_hour,
-                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w")
-        tk.Label(top_f, text="표시 방식과 평일 제외 시간은 아래에서 선택하세요.", font=(FONT, 8),
-                 fg="#777", bg="#fffaf7").pack(anchor="w", padx=20)
-
-        tk.Checkbutton(top_f, text="Windows 로그인 시 자동으로 켜기", variable=v_auto,
-                       font=f, bg="#fffaf7").pack(anchor="w", padx=16, pady=(4, 0))
-        tk.Checkbutton(top_f, text="별도 정각 알림창 사용 (직접 닫을 때까지 유지)", variable=v_hour_pop,
-                       font=f, bg="#fffaf7").pack(anchor="w", padx=16)
-
-        # 평일 제외 시간대
-        f_mute = tk.Frame(top_f, bg="#fffaf7")
-        f_mute.pack(anchor="w", padx=16, pady=2)
-        tk.Checkbutton(f_mute, text="평일(월~금) 아래 시간에는 정각 알림 끄기", variable=v_work_mute,
-                       font=f, bg="#fffaf7").pack(anchor="w")
+        top_f.pack(fill="x", padx=12, pady=(10, 4))
         
-        f_span = tk.Frame(top_f, bg="#fffaf7")
-        f_span.pack(anchor="w", padx=36, pady=2)
-        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_start).pack(side="left")
-        tk.Label(f_span, text="시 ~ ", font=f, bg="#fffaf7").pack(side="left")
-        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_end).pack(side="left")
-        tk.Label(f_span, text="시 (양 끝 정각 포함)", font=f, bg="#fffaf7").pack(side="left", padx=4)
+        tk.Label(top_f, text="엔진:", font=f, bg="#fffaf7").pack(side="left")
+        saved_provider = self.s.get("ai_provider", "Gemini")
+        ai_provider = tk.StringVar(value=saved_provider)
+        cb_engine = ttk.Combobox(top_f, textvariable=ai_provider, values=["Gemini", "Claude", "Ollama"], width=7, state="readonly")
+        cb_engine.pack(side="left", padx=2)
 
-        # 미리보기 버튼 행
-        f_prev = tk.Frame(top_f, bg="#fffaf7")
-        f_prev.pack(fill="x", padx=20, pady=4)
-        tk.Label(f_prev, text="9~18 설정: 평일 09~18시 제외, 주말은 알림", font=(FONT, 8), fg="#777", bg="#fffaf7").pack(side="left")
-        tk.Button(f_prev, text="정각창 미리보기", font=(FONT, 8),
-                  command=lambda: self.trigger_custom_alert("정각 알림", "11:00", "오전 11시야!\n(미리보기)")).pack(side="right")
+        tk.Label(top_f, text="성격:", font=f, bg="#fffaf7").pack(side="left", padx=(6, 2))
+        persona_var = tk.StringVar(value=getattr(self, "ai_persona", "고양이"))
+        cb_persona = ttk.Combobox(top_f, textvariable=persona_var, values=["고양이", "강아지"], width=6, state="readonly")
+        cb_persona.pack(side="left", padx=2)
 
-        # 2. 테두리 빛 효과 블록
-        tk.Checkbutton(top_f, text="알림창을 닫을 때까지 화면 가장자리 빛 유지", variable=v_glow,
-                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(8, 2))
-        
-        f_gopt1 = tk.Frame(top_f, bg="#fffaf7")
-        f_gopt1.pack(anchor="w", padx=24, pady=2)
-        tk.Label(f_gopt1, text="빛 색상", font=f, bg="#fffaf7").pack(side="left")
-        ttk.Combobox(f_gopt1, textvariable=v_glow_col, values=["피치·핑크·보라·하늘", "단색 네온", "골드 웜"],
-                     state="readonly", width=18).pack(side="left", padx=8)
-
-        f_gopt2 = tk.Frame(top_f, bg="#fffaf7")
-        f_gopt2.pack(anchor="w", padx=24, pady=2)
-        tk.Label(f_gopt2, text="퍼지는 폭", font=f, bg="#fffaf7").pack(side="left")
-        ttk.Combobox(f_gopt2, textvariable=v_glow_w, values=["보통", "넓게"], state="readonly", width=8).pack(side="left", padx=6)
-        tk.Label(f_gopt2, text="진하기", font=f, bg="#fffaf7").pack(side="left", padx=(10, 0))
-        ttk.Combobox(f_gopt2, textvariable=v_glow_i, values=["은은하게", "선명하게"], state="readonly", width=8).pack(side="left", padx=6)
-
-        # 3. 점심 알림
-        f_l = tk.Frame(top_f, bg="#fffaf7")
-        f_l.pack(fill="x", pady=(10, 2))
-        tk.Checkbutton(f_l, text="점심 알림", variable=v_lunch, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
-        tk.Label(f_l, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
-        tk.Entry(f_l, textvariable=v_lunch_t, width=8, font=f).pack(side="left")
-        
-        f_lm = tk.Frame(top_f, bg="#fffaf7")
-        f_lm.pack(fill="x", padx=24, pady=2)
-        tk.Label(f_lm, text="문구", font=f, bg="#fffaf7").pack(side="left")
-        tk.Entry(f_lm, textvariable=v_lunch_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
-
-        # 4. 퇴근 알림
-        f_lv = tk.Frame(top_f, bg="#fffaf7")
-        f_lv.pack(fill="x", pady=(10, 2))
-        tk.Checkbutton(f_lv, text="퇴근 알림", variable=v_leave, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
-        tk.Label(f_lv, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
-        tk.Entry(f_lv, textvariable=v_leave_t, width=8, font=f).pack(side="left")
-
-        f_lvm = tk.Frame(top_f, bg="#fffaf7")
-        f_lvm.pack(fill="x", padx=24, pady=2)
-        tk.Label(f_lvm, text="문구", font=f, bg="#fffaf7").pack(side="left")
-        tk.Entry(f_lvm, textvariable=v_leave_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
-
-        # 5. 낮잠 알림
-        f_nap = tk.Frame(top_f, bg="#fffaf7")
-        f_nap.pack(anchor="w", pady=(8, 2))
-        tk.Checkbutton(f_nap, text="낮잠", variable=v_nap, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
-        ttk.Spinbox(f_nap, from_=1, to=120, width=5, textvariable=v_nap_m).pack(side="left", padx=6)
-        tk.Label(f_nap, text="분 동안 입력이 없으면 잠들어요", font=f, bg="#fffaf7").pack(side="left")
-        
-        tk.Label(top_f, text="시간은 12:00처럼 시:분으로 적어 주세요.", font=(FONT, 8), fg="#888", bg="#fffaf7").pack(anchor="w", pady=(4, 8))
-
-        # 하단 버튼 바
-        btn_bar = tk.Frame(w, bg="#fffaf7")
-        btn_bar.pack(fill="x", padx=16, pady=(0, 16))
-        
-        tk.Button(btn_bar, text="점심 미리보기", font=f,
-                  command=lambda: self.trigger_custom_alert("점심 알림", v_lunch_t.get(), v_lunch_m.get())).pack(side="left", padx=2)
-        tk.Button(btn_bar, text="퇴근 미리보기", font=f,
-                  command=lambda: self.trigger_custom_alert("퇴근 알림", v_leave_t.get(), v_leave_m.get())).pack(side="left", padx=2)
-
-        def save_alert_settings():
-            s["notify_hour"] = v_hour.get()
-            s["autostart"] = v_auto.get()
-            set_autostart(v_auto.get())
-            s["notify_hour_popup"] = v_hour_pop.get()
-            s["work_hour_mute"] = v_work_mute.get()
-            try:
-                s["work_mute_start"] = int(v_m_start.get())
-                s["work_mute_end"] = int(v_m_end.get())
-            except Exception: pass
-            s["glow_edge"] = v_glow.get()
-            s["glow_color"] = v_glow_col.get()
-            s["glow_width"] = v_glow_w.get()
-            s["glow_intensity"] = v_glow_i.get()
-            s["notify_lunch"] = v_lunch.get()
-            s["lunch_time"] = v_lunch_t.get().strip()
-            s["lunch_msg"] = v_lunch_m.get().strip()
-            s["notify_leave"] = v_leave.get()
-            s["leave_time"] = v_leave_t.get().strip()
-            s["leave_msg"] = v_leave_m.get().strip()
-            s["idle_nap_min"] = int(v_nap_m.get())
+        def on_persona_change(e=None):
+            self.ai_persona = persona_var.get()
             self.save()
-            w.destroy()
+        cb_persona.bind("<<ComboboxSelected>>", on_persona_change)
 
-        tk.Button(btn_bar, text="취소", font=f, width=6, command=w.destroy).pack(side="right", padx=3)
-        tk.Button(btn_bar, text="저장", font=f, width=6, bg="#e9ecef", command=save_alert_settings).pack(side="right", padx=3)
+        lbl_dynamic = tk.Label(top_f, text="Key:", font=f, bg="#fffaf7")
+        lbl_dynamic.pack(side="left", padx=(6, 2))
+        
+        ent_dynamic = tk.Entry(top_f, font=f)
+        ent_dynamic.pack(side="left", fill="x", expand=True)
 
-    # ------------------------------------------------ 설정 UI 2: 움직임과 반응 (사진 2)
+        def update_engine_ui(e=None):
+            engine = ai_provider.get()
+            self.s["ai_provider"] = engine
+            ent_dynamic.delete(0, "end")
+            if engine == "Ollama":
+                lbl_dynamic.config(text="모델:")
+                ent_dynamic.config(show="")
+                saved_model = self.s.get("ollama_model", "llama3.2")
+                ent_dynamic.insert(0, saved_model)
+            else:
+                lbl_dynamic.config(text="Key:")
+                ent_dynamic.config(show="*")
+                saved_key = self.s.get("ai_api_key", os.environ.get("GEMINI_API_KEY", ""))
+                ent_dynamic.insert(0, saved_key)
+            self.save()
+
+        cb_engine.bind("<<ComboboxSelected>>", update_engine_ui)
+        update_engine_ui()
+
+        txt_log = tk.Text(w, font=f, bg="#ffffff", wrap="word", state="disabled", padx=8, pady=8)
+        txt_log.pack(fill="both", expand=True, padx=12, pady=6)
+
+        def append_log(sender, text):
+            txt_log.config(state="normal")
+            txt_log.insert("end", f"[{sender}]\n{text}\n\n")
+            txt_log.see("end")
+            txt_log.config(state="disabled")
+
+        for item in self.ai_history:
+            sender_label = "나" if item["role"] == "user" else f"{self.ai_persona} 친구"
+            append_log(sender_label, item["parts"])
+
+        bottom_f = tk.Frame(w, bg="#fffaf7")
+        bottom_f.pack(fill="x", padx=12, pady=(4, 12))
+        
+        query_ent = tk.Entry(bottom_f, font=f)
+        query_ent.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def clear_history():
+            self.ai_history.clear()
+            self.save()
+            txt_log.config(state="normal")
+            txt_log.delete("1.0", "end")
+            txt_log.config(state="disabled")
+            p_name = persona_var.get()
+            call = "냥" if p_name == "고양이" else "멍"
+            target_pet.say(f"기억을 전부 지웠다{call}! 새 이야기하자!", secs=2.5)
+
+        btn_clear = tk.Button(bottom_f, text="대화 리셋", font=(FONT, 9), command=clear_history)
+        btn_clear.pack(side="right", padx=(4, 0))
+
+        # --- AI 응답 내 도구(Tool) 및 모션(Action) 파싱 실행기 ---
+        def execute_tool_tags(text):
+            clean_text = text
+            # 1) 모션 태그 처리 ([ACTION: hop] 등)
+            import re
+            act_matches = re.findall(r"\[ACTION:\s*([a-zA-Z0-9_]+)\]", clean_text)
+            for act in act_matches:
+                clean_text = clean_text.replace(f"[ACTION: {act}]", "").replace(f"[ACTION:{act}]", "")
+                if act in ("hop", "dance", "spin", "dizzy", "slide", "sit"):
+                    target_pet.start(act)
+
+            # 2) 도구 호출 태그 처리 ([TOOL: {...}])
+            tool_matches = re.findall(r"\[TOOL:\s*(\{.*?\})\]", clean_text, re.DOTALL)
+            for tm in tool_matches:
+                clean_text = clean_text.replace(f"[TOOL: {tm}]", "").replace(f"[TOOL:{tm}]", "")
+                try:
+                    tool_data = json.loads(tm)
+                    action = tool_data.get("action")
+                    if action == "timer":
+                        mins = max(1, int(tool_data.get("minutes", 5)))
+                        msg = tool_data.get("msg", "⏰ 타이머가 끝났어요!")
+                        self.timer_end = time.time() + mins * 60
+                        self.timer_custom_msg = msg
+                        append_log("시스템", f"🔔 {mins}분 타이머가 설정되었습니다. ('{msg}')")
+                    elif action == "todo":
+                        todo_text = tool_data.get("text", "").strip()
+                        if todo_text:
+                            self.todos.append({"t": todo_text, "done": False})
+                            self.save()
+                            append_log("시스템", f"📝 할 일 목록에 추가되었습니다: '{todo_text}'")
+                except Exception:
+                    pass
+            return clean_text.strip()
+
+        def run_query():
+            query = query_ent.get().strip()
+            param_val = ent_dynamic.get().strip()
+            provider = ai_provider.get()
+
+            if not query: return
+
+            if provider == "Ollama":
+                if not param_val:
+                    append_log("안내", "Ollama 모델명을 적어줘! (예: llama3.2, qwen2.5:3b)")
+                    return
+                self.s["ollama_model"] = param_val
+            else:
+                if not param_val:
+                    append_log("안내", "API Key를 입력해줘!")
+                    return
+                self.s["ai_api_key"] = param_val
+
+            self.ai_persona = persona_var.get()
+            self.save()
+
+            append_log("나", query)
+            query_ent.delete(0, "end")
+            
+            persona = self.ai_persona
+            call = "냥" if persona == "고양이" else "멍"
+            target_pet.say(f"생각하는 중이다{call}... 🐾", secs=4.0)
+
+            self.ai_history.append({"role": "user", "parts": query})
+            if len(self.ai_history) > 10:
+                self.ai_history = self.ai_history[-10:]
+            self.save()
+
+            system_instruction_text = PERSONA_PROMPTS[persona]
+
+            def worker():
+                try:
+                    ans_text = ""
+                    if provider == "Ollama":
+                        url = "http://127.0.0.1:11434/api/chat"
+                        headers = {"Content-Type": "application/json"}
+                        ollama_messages = [{"role": "system", "content": system_instruction_text}]
+                        for item in self.ai_history:
+                            r = "user" if item["role"] == "user" else "assistant"
+                            ollama_messages.append({"role": r, "content": item["parts"]})
+
+                        payload = {"model": param_val, "messages": ollama_messages, "stream": False}
+                        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=30) as res:
+                            data = json.loads(res.read().decode("utf-8"))
+                            ans_text = data["message"]["content"]
+
+                    elif provider == "Gemini":
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={param_val}"
+                        headers = {"Content-Type": "application/json"}
+                        gemini_contents = []
+                        for item in self.ai_history:
+                            gemini_role = "user" if item["role"] == "user" else "model"
+                            gemini_contents.append({"role": gemini_role, "parts": [{"text": item["parts"]}]})
+
+                        payload = {
+                            "system_instruction": {"parts": [{"text": system_instruction_text}]},
+                            "contents": gemini_contents
+                        }
+                        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=15) as res:
+                            data = json.loads(res.read().decode("utf-8"))
+                            ans_text = data["candidates"][0]["content"]["parts"][0]["text"]
+
+                    elif provider == "Claude":
+                        url = "https://api.anthropic.com/v1/messages"
+                        headers = {
+                            "x-api-key": param_val,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json"
+                        }
+                        claude_messages = []
+                        for item in self.ai_history:
+                            claude_role = "user" if item["role"] == "user" else "assistant"
+                            claude_messages.append({"role": claude_role, "content": item["parts"]})
+
+                        payload = {
+                            "model": "claude-3-7-sonnet-20250219",
+                            "max_tokens": 1000,
+                            "system": system_instruction_text,
+                            "messages": claude_messages
+                        }
+                        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+                        with urllib.request.urlopen(req, timeout=15) as res:
+                            data = json.loads(res.read().decode("utf-8"))
+                            ans_text = data["content"][0]["text"]
+
+                    w.after(0, lambda: on_success(ans_text, persona))
+                except Exception as ex:
+                    err = str(ex)
+                    w.after(0, lambda: on_error(err, provider))
+
+            def on_success(raw_ans, current_persona):
+                # 도구 실행 및 태그 파싱
+                cleaned_ans = execute_tool_tags(raw_ans)
+                
+                self.ai_history.append({"role": "model", "parts": cleaned_ans})
+                self.save()
+                
+                append_log(f"{current_persona} 펫", cleaned_ans)
+                first_line = cleaned_ans.strip().split("\n")[0][:30]
+                target_pet.say(first_line, secs=4.0)
+                if target_pet.act not in ("dance", "spin"):
+                    target_pet.start("hop", n=1)
+
+            def on_error(err, current_provider):
+                if self.ai_history and self.ai_history[-1]["role"] == "user":
+                    self.ai_history.pop()
+                    self.save()
+                
+                if current_provider == "Ollama" and ("refused" in err.lower() or "11434" in err):
+                    msg = "Ollama가 켜져 있지 않거나 설치되지 않았어! (터미널에서 ollama run <모델명> 실행 필요)"
+                else:
+                    msg = f"답변을 가져오지 못했어: {err}"
+
+                append_log("오류", msg)
+                target_pet.say("말문이 막혔다냥/멍...", secs=2.5)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        query_ent.bind("<Return>", lambda e: run_query())
+        btn_send = tk.Button(bottom_f, text="전송", font=f, bg="#e9ecef", command=run_query)
+        btn_send.pack(side="right")
+
+    # ------------------------------------------------ 기본 설정 다이얼로그 (생략 없이 유지)
+    def open_record(self):
+        w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
+        if w is None: return
+        f = (FONT, 10)
+        big = tk.Label(w, font=(FONT, 16, "bold"), bg="#fffaf7")
+        big.pack(anchor="w", padx=20, pady=(18, 4))
+        info = tk.Label(w, font=f, bg="#fffaf7", justify="left")
+        info.pack(anchor="w", padx=20)
+        tk.Button(w, text="간식 주기", font=f, command=lambda: self.feed()).pack(anchor="w", padx=20, pady=8)
+        tk.Label(w, text="생활 설정", font=(FONT, 10, "bold"), bg="#fffaf7").pack(anchor="w", padx=20, pady=(6, 0))
+        tk.Label(w, text=f"간식은 포만감 +{self.s['snack']}씩, 최대 100까지 채워줘요.\n"
+                         "함께한 시간 1분마다 친밀도도 1씩 쌓여요.", font=f, bg="#fffaf7", justify="left").pack(anchor="w", padx=20)
+        row = tk.Frame(w, bg="#fffaf7")
+        row.pack(anchor="w", padx=20, pady=8)
+        tk.Label(row, text="간식 없이 배고파지기까지", font=f, bg="#fffaf7").pack(side="left")
+        hv = tk.IntVar(value=self.s["hunger_min"])
+        ttk.Spinbox(row, from_=0, to=600, width=5, textvariable=hv).pack(side="left", padx=8)
+        tk.Label(row, text="분", font=f, bg="#fffaf7").pack(side="left")
+        cv_ = tk.BooleanVar(value=self.s["cry_always"])
+        hr_ = tk.BooleanVar(value=self.s["hidden_reactions"])
+        tk.Checkbutton(w, text="배고프면 계속 우는 모습", variable=cv_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+        tk.Checkbutton(w, text="숨겨진 반응 사용", variable=hr_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+
+        def apply():
+            try: self.s["hunger_min"] = max(0, int(hv.get()))
+            except Exception: pass
+            self.s["cry_always"] = cv_.get()
+            self.s["hidden_reactions"] = hr_.get()
+            self.save()
+            msg.config(text="저장했어요!")
+
+        tk.Button(w, text="생활 설정 저장", font=f, command=apply).pack(anchor="w", padx=20, pady=8)
+        msg = tk.Label(w, text="", font=(FONT, 9), bg="#fffaf7", fg="#2a7")
+        msg.pack(anchor="w", padx=20)
+        sec = tk.Label(w, font=f, bg="#fffaf7", justify="left", wraplength=390)
+        sec.pack(anchor="w", padx=20, pady=(10, 0))
+
+        def refresh():
+            if not w.winfo_exists(): return
+            big.config(text=f"♥ 친밀도 {self.inti}   ·   함께 {self.mins}분")
+            nm = self.next_milestone()
+            info.config(text=f"포만감 {int(self.sat)} / 100\n"
+                             f"다음 꽃다발: {'친밀도 %d' % nm if nm else '모두 받았어요!'}\n"
+                             + ("지금 간식을 줄 수 있어요." if self.sat < 100 else "배가 불러요."))
+            lines = [f"발견한 비밀 {len(self.secrets)} / {len(SECRETS)}"]
+            for k, (nme, hint) in SECRETS.items():
+                lines.append(f"  · {nme}: {hint}" if k in self.secrets else "  · ???")
+            sec.config(text="\n".join(lines))
+            w.after(1000, refresh)
+
+        refresh()
+
     def open_motion(self):
         w = self.dialog("motion", "전주치이카와 · 움직임과 반응", 420, 680)
         if w is None: return
@@ -1363,7 +1562,6 @@ class Game:
         v_slide_d = tk.DoubleVar(value=s.get("slide_delay", 0.12))
         v_cr = tk.StringVar(value=s["click_reaction"])
 
-        # 스크롤 가능한 컨테이너
         top_f = tk.Frame(w, bg="#fffaf7")
         top_f.pack(fill="both", expand=True, padx=16, pady=12)
 
@@ -1386,14 +1584,12 @@ class Game:
         for txt, var in checks:
             tk.Checkbutton(top_f, text=txt, variable=var, font=f, bg="#fffaf7").pack(anchor="w", pady=1)
 
-        # 캐릭터 진하기 (투명도)
         f_op = tk.Frame(top_f, bg="#fffaf7")
         f_op.pack(anchor="w", pady=(8, 2))
         tk.Label(f_op, text="캐릭터 진하기", font=f, bg="#fffaf7").pack(side="left")
         ttk.Spinbox(f_op, from_=10, to=100, width=5, textvariable=v_op).pack(side="left", padx=6)
         tk.Label(f_op, text="% · 낮을수록 투명해요", font=(FONT, 8), fg="#777", bg="#fffaf7").pack(side="left")
 
-        # 속도 조절 라벨
         tk.Label(top_f, text="속도 조절 · 숫자가 클수록 빨라져요", font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(10, 2))
 
         speeds = [
@@ -1414,13 +1610,11 @@ class Game:
         ttk.Spinbox(f_sd, from_=0.01, to=1.0, increment=0.01, width=6, textvariable=v_slide_d).pack(side="left", padx=6)
         tk.Label(f_sd, text="초", font=f, bg="#fffaf7").pack(side="left")
 
-        # 클릭했을 때 반응
         f_cr = tk.Frame(top_f, bg="#fffaf7")
         f_cr.pack(anchor="w", pady=(8, 12))
         tk.Label(f_cr, text="클릭했을 때 반응", font=f, bg="#fffaf7").pack(side="left", padx=(0, 6))
         ttk.Combobox(f_cr, textvariable=v_cr, values=["폴짝", "울기", "어질어질", "랜덤"], state="readonly", width=10).pack(side="left")
 
-        # 하단 저장 / 취소 버튼 바
         btn_bar = tk.Frame(w, bg="#fffaf7")
         btn_bar.pack(fill="x", padx=16, pady=(0, 14))
 
@@ -1456,59 +1650,146 @@ class Game:
         tk.Button(btn_bar, text="취소", font=f, width=7, command=w.destroy).pack(side="right", padx=4)
         tk.Button(btn_bar, text="저장", font=f, width=7, bg="#e9ecef", command=save_motion_settings).pack(side="right", padx=4)
 
-    # ------------------------------------------------ 설정 UI 3: 친구 기록 / 도우미
-    def open_record(self):
-        w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
+    def open_notify(self):
+        w = self.dialog("notify", "전주치이카와 · 자동 시작 / 알림 설정", 460, 680)
         if w is None: return
-        f = (FONT, 10)
-        big = tk.Label(w, font=(FONT, 16, "bold"), bg="#fffaf7")
-        big.pack(anchor="w", padx=20, pady=(18, 4))
-        info = tk.Label(w, font=f, bg="#fffaf7", justify="left")
-        info.pack(anchor="w", padx=20)
-        tk.Button(w, text="간식 주기", font=f, command=lambda: self.feed()).pack(anchor="w", padx=20, pady=8)
-        tk.Label(w, text="생활 설정", font=(FONT, 10, "bold"), bg="#fffaf7").pack(anchor="w", padx=20, pady=(6, 0))
-        tk.Label(w, text=f"간식은 포만감 +{self.s['snack']}씩, 최대 100까지 채워줘요.\n"
-                         "함께한 시간 1분마다 친밀도도 1씩 쌓여요.", font=f, bg="#fffaf7", justify="left").pack(anchor="w", padx=20)
-        row = tk.Frame(w, bg="#fffaf7")
-        row.pack(anchor="w", padx=20, pady=8)
-        tk.Label(row, text="간식 없이 배고파지기까지", font=f, bg="#fffaf7").pack(side="left")
-        hv = tk.IntVar(value=self.s["hunger_min"])
-        ttk.Spinbox(row, from_=0, to=600, width=5, textvariable=hv).pack(side="left", padx=8)
-        tk.Label(row, text="분", font=f, bg="#fffaf7").pack(side="left")
-        cv_ = tk.BooleanVar(value=self.s["cry_always"])
-        hr_ = tk.BooleanVar(value=self.s["hidden_reactions"])
-        tk.Checkbutton(w, text="배고프면 계속 우는 모습", variable=cv_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
-        tk.Checkbutton(w, text="숨겨진 반응 사용", variable=hr_, font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+        f = (FONT, 9)
+        s = self.s
 
-        def apply():
+        v_hour = tk.BooleanVar(value=s["notify_hour"])
+        v_auto = tk.BooleanVar(value=s["autostart"])
+        v_hour_pop = tk.BooleanVar(value=s["notify_hour_popup"])
+        v_work_mute = tk.BooleanVar(value=s["work_hour_mute"])
+        v_m_start = tk.IntVar(value=s["work_mute_start"])
+        v_m_end = tk.IntVar(value=s["work_mute_end"])
+        
+        v_glow = tk.BooleanVar(value=s["glow_edge"])
+        v_glow_col = tk.StringVar(value=s["glow_color"])
+        v_glow_w = tk.StringVar(value=s["glow_width"])
+        v_glow_i = tk.StringVar(value=s["glow_intensity"])
+        
+        v_lunch = tk.BooleanVar(value=s["notify_lunch"])
+        v_lunch_t = tk.StringVar(value=s["lunch_time"])
+        v_lunch_m = tk.StringVar(value=s["lunch_msg"])
+        
+        v_leave = tk.BooleanVar(value=s["notify_leave"])
+        v_leave_t = tk.StringVar(value=s["leave_time"])
+        v_leave_m = tk.StringVar(value=s["leave_msg"])
+        
+        v_nap = tk.BooleanVar(value=True)
+        v_nap_m = tk.IntVar(value=s.get("idle_nap_min", 10))
+
+        top_f = tk.Frame(w, bg="#fffaf7")
+        top_f.pack(fill="both", expand=True, padx=16, pady=12)
+
+        tk.Checkbutton(top_f, text="정각 알림 (매시간 현재 시각 알려주기)", variable=v_hour,
+                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w")
+        tk.Label(top_f, text="표시 방식과 평일 제외 시간은 아래에서 선택하세요.", font=(FONT, 8),
+                 fg="#777", bg="#fffaf7").pack(anchor="w", padx=20)
+
+        tk.Checkbutton(top_f, text="Windows 로그인 시 자동으로 켜기", variable=v_auto,
+                       font=f, bg="#fffaf7").pack(anchor="w", padx=16, pady=(4, 0))
+        tk.Checkbutton(top_f, text="별도 정각 알림창 사용 (직접 닫을 때까지 유지)", variable=v_hour_pop,
+                       font=f, bg="#fffaf7").pack(anchor="w", padx=16)
+
+        f_mute = tk.Frame(top_f, bg="#fffaf7")
+        f_mute.pack(anchor="w", padx=16, pady=2)
+        tk.Checkbutton(f_mute, text="평일(월~금) 아래 시간에는 정각 알림 끄기", variable=v_work_mute,
+                       font=f, bg="#fffaf7").pack(anchor="w")
+        
+        f_span = tk.Frame(top_f, bg="#fffaf7")
+        f_span.pack(anchor="w", padx=36, pady=2)
+        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_start).pack(side="left")
+        tk.Label(f_span, text="시 ~ ", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_span, from_=0, to=23, width=4, textvariable=v_m_end).pack(side="left")
+        tk.Label(f_span, text="시 (양 끝 정각 포함)", font=f, bg="#fffaf7").pack(side="left", padx=4)
+
+        f_prev = tk.Frame(top_f, bg="#fffaf7")
+        f_prev.pack(fill="x", padx=20, pady=4)
+        tk.Label(f_prev, text="9~18 설정: 평일 09~18시 제외, 주말은 알림", font=(FONT, 8), fg="#777", bg="#fffaf7").pack(side="left")
+        tk.Button(f_prev, text="정각창 미리보기", font=(FONT, 8),
+                  command=lambda: self.trigger_custom_alert("정각 알림", "11:00", "오전 11시야!\n(미리보기)")).pack(side="right")
+
+        tk.Checkbutton(top_f, text="알림창을 닫을 때까지 화면 가장자리 빛 유지", variable=v_glow,
+                       font=(FONT, 9, "bold"), bg="#fffaf7").pack(anchor="w", pady=(8, 2))
+        
+        f_gopt1 = tk.Frame(top_f, bg="#fffaf7")
+        f_gopt1.pack(anchor="w", padx=24, pady=2)
+        tk.Label(f_gopt1, text="빛 색상", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Combobox(f_gopt1, textvariable=v_glow_col, values=["피치·핑크·보라·하늘", "단색 네온", "골드 웜"],
+                     state="readonly", width=18).pack(side="left", padx=8)
+
+        f_gopt2 = tk.Frame(top_f, bg="#fffaf7")
+        f_gopt2.pack(anchor="w", padx=24, pady=2)
+        tk.Label(f_gopt2, text="퍼지는 폭", font=f, bg="#fffaf7").pack(side="left")
+        ttk.Combobox(f_gopt2, textvariable=v_glow_w, values=["보통", "넓게"], state="readonly", width=8).pack(side="left", padx=6)
+        tk.Label(f_gopt2, text="진하기", font=f, bg="#fffaf7").pack(side="left", padx=(10, 0))
+        ttk.Combobox(f_gopt2, textvariable=v_glow_i, values=["은은하게", "선명하게"], state="readonly", width=8).pack(side="left", padx=6)
+
+        f_l = tk.Frame(top_f, bg="#fffaf7")
+        f_l.pack(fill="x", pady=(10, 2))
+        tk.Checkbutton(f_l, text="점심 알림", variable=v_lunch, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        tk.Label(f_l, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
+        tk.Entry(f_l, textvariable=v_lunch_t, width=8, font=f).pack(side="left")
+        
+        f_lm = tk.Frame(top_f, bg="#fffaf7")
+        f_lm.pack(fill="x", padx=24, pady=2)
+        tk.Label(f_lm, text="문구", font=f, bg="#fffaf7").pack(side="left")
+        tk.Entry(f_lm, textvariable=v_lunch_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
+
+        f_lv = tk.Frame(top_f, bg="#fffaf7")
+        f_lv.pack(fill="x", pady=(10, 2))
+        tk.Checkbutton(f_lv, text="퇴근 알림", variable=v_leave, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        tk.Label(f_lv, text="시간", font=f, bg="#fffaf7").pack(side="left", padx=(10, 2))
+        tk.Entry(f_lv, textvariable=v_leave_t, width=8, font=f).pack(side="left")
+
+        f_lvm = tk.Frame(top_f, bg="#fffaf7")
+        f_lvm.pack(fill="x", padx=24, pady=2)
+        tk.Label(f_lvm, text="문구", font=f, bg="#fffaf7").pack(side="left")
+        tk.Entry(f_lvm, textvariable=v_leave_m, font=f).pack(side="left", fill="x", expand=True, padx=6)
+
+        f_nap = tk.Frame(top_f, bg="#fffaf7")
+        f_nap.pack(anchor="w", pady=(8, 2))
+        tk.Checkbutton(f_nap, text="낮잠", variable=v_nap, font=(FONT, 9, "bold"), bg="#fffaf7").pack(side="left")
+        ttk.Spinbox(f_nap, from_=1, to=120, width=5, textvariable=v_nap_m).pack(side="left", padx=6)
+        tk.Label(f_nap, text="분 동안 입력이 없으면 잠들어요", font=f, bg="#fffaf7").pack(side="left")
+        
+        tk.Label(top_f, text="시간은 12:00처럼 시:분으로 적어 주세요.", font=(FONT, 8), fg="#888", bg="#fffaf7").pack(anchor="w", pady=(4, 8))
+
+        btn_bar = tk.Frame(w, bg="#fffaf7")
+        btn_bar.pack(fill="x", padx=16, pady=(0, 16))
+        
+        tk.Button(btn_bar, text="점심 미리보기", font=f,
+                  command=lambda: self.trigger_custom_alert("점심 알림", v_lunch_t.get(), v_lunch_m.get())).pack(side="left", padx=2)
+        tk.Button(btn_bar, text="퇴근 미리보기", font=f,
+                  command=lambda: self.trigger_custom_alert("퇴근 알림", v_leave_t.get(), v_leave_m.get())).pack(side="left", padx=2)
+
+        def save_alert_settings():
+            s["notify_hour"] = v_hour.get()
+            s["autostart"] = v_auto.get()
+            set_autostart(v_auto.get())
+            s["notify_hour_popup"] = v_hour_pop.get()
+            s["work_hour_mute"] = v_work_mute.get()
             try:
-                self.s["hunger_min"] = max(0, int(hv.get()))
+                s["work_mute_start"] = int(v_m_start.get())
+                s["work_mute_end"] = int(v_m_end.get())
             except Exception: pass
-            self.s["cry_always"] = cv_.get()
-            self.s["hidden_reactions"] = hr_.get()
+            s["glow_edge"] = v_glow.get()
+            s["glow_color"] = v_glow_col.get()
+            s["glow_width"] = v_glow_w.get()
+            s["glow_intensity"] = v_glow_i.get()
+            s["notify_lunch"] = v_lunch.get()
+            s["lunch_time"] = v_lunch_t.get().strip()
+            s["lunch_msg"] = v_lunch_m.get().strip()
+            s["notify_leave"] = v_leave.get()
+            s["leave_time"] = v_leave_t.get().strip()
+            s["leave_msg"] = v_leave_m.get().strip()
+            s["idle_nap_min"] = int(v_nap_m.get())
             self.save()
-            msg.config(text="저장했어요!")
+            w.destroy()
 
-        tk.Button(w, text="생활 설정 저장", font=f, command=apply).pack(anchor="w", padx=20, pady=8)
-        msg = tk.Label(w, text="", font=(FONT, 9), bg="#fffaf7", fg="#2a7")
-        msg.pack(anchor="w", padx=20)
-        sec = tk.Label(w, font=f, bg="#fffaf7", justify="left", wraplength=390)
-        sec.pack(anchor="w", padx=20, pady=(10, 0))
-
-        def refresh():
-            if not w.winfo_exists(): return
-            big.config(text=f"♥ 친밀도 {self.inti}   ·   함께 {self.mins}분")
-            nm = self.next_milestone()
-            info.config(text=f"포만감 {int(self.sat)} / 100\n"
-                             f"다음 꽃다발: {'친밀도 %d' % nm if nm else '모두 받았어요!'}\n"
-                             + ("지금 간식을 줄 수 있어요." if self.sat < 100 else "배가 불러요."))
-            lines = [f"발견한 비밀 {len(self.secrets)} / {len(SECRETS)}"]
-            for k, (nme, hint) in SECRETS.items():
-                lines.append(f"  · {nme}: {hint}" if k in self.secrets else "  · ???")
-            sec.config(text="\n".join(lines))
-            w.after(1000, refresh)
-
-        refresh()
+        tk.Button(btn_bar, text="취소", font=f, width=6, command=w.destroy).pack(side="right", padx=3)
+        tk.Button(btn_bar, text="저장", font=f, width=6, bg="#e9ecef", command=save_alert_settings).pack(side="right", padx=3)
 
     def open_helper(self):
         w = self.dialog("helper", "도우미 · 할 일 · 메모 · 타이머", 440, 520)
@@ -1586,6 +1867,7 @@ class Game:
         def start_t():
             try:
                 self.timer_end = time.time() + max(1, int(mv.get())) * 60
+                self.timer_custom_msg = ""
             except Exception: pass
 
         def cancel_t():
