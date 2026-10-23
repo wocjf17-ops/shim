@@ -1,10 +1,9 @@
 """
-바탕화면 펫 프로그램 (안정화 완전판)
-- 통신 무한 멈춤(Hang) 방지 및 타임아웃 5초 제한
-- 공공기관 SSL 인증서 우회 처리 탑재
-- 통신 실패/차단 시 채팅창에 즉시 원인 한국어 출력
+바탕화면 펫 프로그램 (최종 완성본)
+- IndentationError 들여쓰기 완벽 수정
+- 404 Not Found 방지: Gemini 다중 모델 자동 폴백
+- 공공기관 SSL 우회 및 5초 타임아웃
 - 행정안전부 공문서 순화 및 오타 검수 (Ctrl + Shift + C)
-- 윈도우 창 타기, 정각/퇴근 알림, To-Do, 타이머 일체 탑재
 """
 import tkinter as tk
 from tkinter import ttk
@@ -23,7 +22,7 @@ TOP = 110                # 말풍선 및 점프 공간
 MAX_PETS = 5
 MILESTONES = [50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000]
 
-# 공공기관 및 사내망 사설 SSL 인증서 오류 우회용 컨텍스트
+# 공공기관 사설 SSL 인증서 오류 우회 컨텍스트
 SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode = ssl.CERT_NONE
@@ -238,14 +237,13 @@ def window_rect(hwnd):
     except Exception:
         return None
 
-# ------------------------------------------------ 초고속 직결형 Gemini API 함수
+# ------------------------------------------------ 404 자동 해결형 Gemini API 함수
 def query_gemini_api(api_key, system_prompt, contents):
-"""404 Not Found 방지: 여러 모델 후보를 순차적으로 시도하여 응답 획득"""
+    """404 Not Found 방지: 여러 모델 후보를 순차적으로 시도하여 응답 획득"""
     key = api_key.strip()
     if not key:
         raise ValueError("API Key가 비어있습니다. 대화창 상단에 Key를 먼저 입력해주세요.")
 
-    # 404를 방지하기 위해 시도할 모델 및 버전 후보 리스트
     candidate_endpoints = [
         ("v1beta", "gemini-1.5-flash-latest"),
         ("v1beta", "gemini-1.5-flash"),
@@ -271,12 +269,10 @@ def query_gemini_api(api_key, system_prompt, contents):
                 res_data = json.loads(res.read().decode("utf-8"))
                 return res_data["candidates"][0]["content"]["parts"][0]["text"]
         except urllib.error.HTTPError as e:
-            # 404 에러일 경우 다음 후보 모델로 넘어가서 재시도
             if e.code == 404:
                 last_error = e
                 continue
             
-            # 400(키 오류) 등 다른 오류는 즉시 내용 파악
             err_msg = ""
             try:
                 err_json = json.loads(e.read().decode("utf-8"))
@@ -289,7 +285,7 @@ def query_gemini_api(api_key, system_prompt, contents):
         except Exception as ex:
             raise Exception(f"통신 연결 실패 ({ex})")
 
-    raise Exception(f"모든 모델 엔드포인트에서 404가 발생했습니다. API Key 권한을 확인해주세요.")
+    raise Exception("모든 모델 엔드포인트에서 404가 발생했습니다. API Key 권한을 확인해주세요.")
 
 # ------------------------------------------------ 화면 가장자리 빛 효과
 class EdgeGlowWindow:
@@ -1398,7 +1394,6 @@ class Game:
 
         def worker():
             try:
-                provider = self.s.get("ai_provider", "Gemini")
                 api_key = self.s.get("ai_api_key", os.environ.get("GEMINI_API_KEY", "")).strip()
 
                 if not api_key:
@@ -1564,11 +1559,8 @@ class Game:
             self.ai_persona = persona_var.get()
             self.save()
 
-            # 1. 화면에 사용자 질문 즉시 출력
             append_log("나", query)
             query_ent.delete(0, "end")
-            
-            # 2. 멈춘 것처럼 보이지 않게 상태 메시지 즉시 출력
             append_log("상태", "AI 응답을 기다리는 중... (최대 5초 소요)")
 
             persona = self.ai_persona
