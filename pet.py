@@ -1,21 +1,21 @@
 """
-바탕화면 펫 프로그램 (실제 사진 전신 버전)
-- 고양이 / 강아지 실제 사진 기반 자연스러운 물리 동작
-- 걷기 / 앉아서 쉬기 / 폴짝 / 슬라이딩 / 어질어질 / 헬리콥터 돌기
-- 벽 타기 / 천장 타기 / 창 타기 (다른 프로그램 창 위에 올라가기)
-- 간식 주기, 포만감, 친밀도, 꽃다발, 배고프면 우는 모습
-- 숨겨진 반응 3가지, 한 마리 더 부르기 (최대 5마리), 몰래 하는 군무
-- 도우미: 할 일 / 메모 / 타이머, 알림 설정, 움직임·반응 설정
+바탕화면 강아지 펫 프로그램
+- 외부 이미지 없이도 귀여운 강아지 그래픽 자체 생성 (사진 추가 시 사진 모드 자동 전환)
+- 귀 펄럭임, 꼬리 살랑살랑, 혀 낼름, 개껌 냠냠 모션
+- 걷기 / 앉기 / 점프 / 슬라이딩 / 어질어질 / 헬리콥터 돌기
+- 벽 타기 / 천장 타기 / 다른 윈도우 창 틀 위 올라타기 (Windows Perch)
+- 한 마리 더 부르기 (최대 5마리), 몰래 하는 군무
+- 도우미: 할 일 / 메모 / 타이머, 알림, 생활 기록 설정
 """
 import tkinter as tk
 from tkinter import ttk
 import json, os, sys, time, random, math, ctypes
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 
 WIN = sys.platform == "win32"
-KEY = "#ff00fe"          # 투명 크로마키 색
+KEY = "#ff00fe"          # 투명 크로마키 색상 키
 FONT = "맑은 고딕"
-TOP = 110                # 말풍선 + 점프 공간
+TOP = 110
 MAX_PETS = 5
 MILESTONES = [50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000]
 
@@ -36,7 +36,7 @@ def res(name):
     return os.path.join(getattr(sys, "_MEIPASS", base_dir()), name)
 
 
-SAVE = os.path.join(base_dir(), "pet_save.json")
+SAVE = os.path.join(base_dir(), "dog_save.json")
 
 DEFAULTS = {
     "speed": 3, "activity": 5, "size": 140,
@@ -48,9 +48,9 @@ DEFAULTS = {
 }
 
 SECRETS = {
-    "spin": ("빙글빙글", "머리 위에서 마우스를 한 바퀴 돌려보기"),
-    "dance": ("몰래 하는 군무", "친구가 둘 이상일 때 마우스를 4초 동안 가만히 두기"),
-    "tickle": ("간지럼", "친구를 빠르게 5번 클릭하기"),
+    "spin": ("빙글빙글", "강아지 머리 위에서 마우스를 한 바퀴 돌려보기"),
+    "dance": ("몰래 하는 군무", "강아지가 둘 이상일 때 마우스를 4초 동안 가만히 두기"),
+    "tickle": ("간지럼", "강아지를 빠르게 5번 클릭하기"),
 }
 
 # ---------------------------------------------------------------- Windows 창 감지 API
@@ -135,6 +135,99 @@ def window_rect(hwnd):
         return None
 
 
+# ---------------------------------------------------------------- 강아지 절차적 그래픽 엔진
+class DogRenderer:
+    C_FUR = (244, 206, 148)
+    C_FUR_SHADOW = (220, 178, 120)
+    C_WHITE = (255, 252, 248)
+    C_NOSE = (35, 25, 25)
+    C_EYE = (40, 28, 22)
+    C_TONGUE = (255, 120, 140)
+    C_COLLAR = (235, 68, 68)
+    C_BONE = (245, 240, 230)
+
+    @classmethod
+    def draw_dog(cls, frame=0, act="idle", hungry=False):
+        w, h = 160, 160
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        cx, cy = 80, 95
+
+        # 1. 살랑거리는 꼬리
+        tail_swing = math.sin(frame * 0.45) * 16 if act != "sit" else math.sin(frame * 0.2) * 8
+        d.line([(cx + 30, cy + 10), (cx + 46 + tail_swing * 0.4, cy - 8), (cx + 56 + tail_swing, cy - 22)],
+               fill=cls.C_FUR, width=10)
+        d.ellipse([cx + 50 + tail_swing, cy - 28, cx + 64 + tail_swing, cy - 14], fill=cls.C_WHITE)
+
+        # 2. 다리
+        if act == "walk":
+            leg_step = math.sin(frame * 0.4) * 8
+            d.rounded_rectangle([cx - 24 + leg_step, cy + 24, cx - 10 + leg_step, cy + 44], radius=5, fill=cls.C_FUR_SHADOW)
+            d.rounded_rectangle([cx + 10 - leg_step, cy + 24, cx + 24 - leg_step, cy + 44], radius=5, fill=cls.C_FUR_SHADOW)
+            d.rounded_rectangle([cx - 16 - leg_step, cy + 26, cx - 2 - leg_step, cy + 46], radius=5, fill=cls.C_FUR)
+            d.rounded_rectangle([cx + 18 + leg_step, cy + 26, cx + 32 + leg_step, cy + 46], radius=5, fill=cls.C_FUR)
+        elif act == "sit":
+            d.rounded_rectangle([cx - 24, cy + 30, cx - 6, cy + 45], radius=6, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 6, cy + 30, cx + 24, cy + 45], radius=6, fill=cls.C_WHITE)
+        else:
+            d.rounded_rectangle([cx - 22, cy + 24, cx - 8, cy + 44], radius=5, fill=cls.C_FUR)
+            d.rounded_rectangle([cx + 8, cy + 24, cx + 22, cy + 44], radius=5, fill=cls.C_FUR)
+            d.rounded_rectangle([cx - 22, cy + 38, cx - 8, cy + 46], radius=4, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 8, cy + 38, cx + 22, cy + 46], radius=4, fill=cls.C_WHITE)
+
+        # 3. 몸통 & 가슴 털
+        d.ellipse([cx - 32, cy - 4, cx + 38, cy + 36], fill=cls.C_FUR)
+        d.ellipse([cx - 20, cy + 4, cx + 16, cy + 32], fill=cls.C_WHITE)
+
+        # 4. 빨간 목줄
+        d.rounded_rectangle([cx - 24, cy - 8, cx + 18, cy - 1], radius=3, fill=cls.C_COLLAR)
+        d.ellipse([cx - 6, cy - 4, cx, cy + 3], fill=(255, 215, 0))
+
+        # 5. 얼굴 베이스
+        d.ellipse([cx - 36, cy - 54, cx + 16, cy + 2], fill=cls.C_FUR)
+
+        # 6. 처진 귀 (펄럭펄럭 모션)
+        ear_flap = math.sin(frame * 0.35) * 5
+        d.rounded_rectangle([cx - 44, cy - 48 + ear_flap, cx - 30, cy - 12 + ear_flap], radius=7, fill=cls.C_FUR_SHADOW)
+        d.rounded_rectangle([cx + 8, cy - 48 - ear_flap, cx + 22, cy - 12 - ear_flap], radius=7, fill=cls.C_FUR_SHADOW)
+
+        # 7. 주둥이 (흰 머즐)
+        d.ellipse([cx - 28, cy - 28, cx + 8, cy - 4], fill=cls.C_WHITE)
+
+        # 8. 촉촉한 코 & 입
+        d.ellipse([cx - 15, cy - 26, cx - 5, cy - 17], fill=cls.C_NOSE)
+        d.line([(cx - 10, cy - 17), (cx - 10, cy - 11)], fill=cls.C_NOSE, width=2)
+        d.arc([cx - 18, cy - 15, cx - 10, cy - 9], 0, 180, fill=cls.C_NOSE, width=2)
+        d.arc([cx - 10, cy - 15, cx - 2, cy - 9], 0, 180, fill=cls.C_NOSE, width=2)
+
+        # 9. 혀 낼름 모션 (간식 먹을 때 또는 기쁠 때)
+        if act in ("eat", "laugh") or (act == "walk" and int(frame // 6) % 2 == 0):
+            d.ellipse([cx - 13, cy - 9, cx - 7, cy + 2], fill=cls.C_TONGUE)
+
+        # 10. 눈
+        if hungry:
+            d.ellipse([cx - 28, cy - 42, cx - 18, cy - 30], fill=cls.C_EYE)
+            d.ellipse([cx - 2, cy - 42, cx + 8, cy - 30], fill=cls.C_EYE)
+            d.ellipse([cx - 25, cy - 39, cx - 20, cy - 33], fill=cls.C_WHITE)
+            d.ellipse([cx + 1, cy - 39, cx + 6, cy - 33], fill=cls.C_WHITE)
+        elif act in ("sit", "dizzy"):
+            d.line([(cx - 27, cy - 36), (cx - 18, cy - 36)], fill=cls.C_EYE, width=2)
+            d.line([(cx - 1, cy - 36), (cx + 8, cy - 36)], fill=cls.C_EYE, width=2)
+        else:
+            d.ellipse([cx - 27, cy - 41, cx - 18, cy - 31], fill=cls.C_EYE)
+            d.ellipse([cx - 1, cy - 41, cx + 8, cy - 31], fill=cls.C_EYE)
+            d.ellipse([cx - 25, cy - 40, cx - 21, cy - 35], fill=cls.C_WHITE)
+            d.ellipse([cx + 1, cy - 40, cx + 5, cy - 35], fill=cls.C_WHITE)
+
+        # 11. 개껌/뼈다귀 물기 모드
+        if act == "eat":
+            d.rounded_rectangle([cx - 26, cy - 15, cx + 6, cy - 7], radius=3, fill=cls.C_BONE)
+            d.ellipse([cx - 30, cy - 18, cx - 22, cy - 11], fill=cls.C_BONE)
+            d.ellipse([cx + 2, cy - 18, cx + 10, cy - 11], fill=cls.C_BONE)
+
+        return im
+
+
 # ---------------------------------------------------------------- 펫 한 마리
 class Pet:
     def __init__(self, g, idx):
@@ -208,37 +301,37 @@ class Pet:
         elif act == "cry":
             if kw.get("kind") == "hungry":
                 self.dur = 140
-                self.say("배고파요 ㅠㅠ 간식 줘요", 3)
+                self.say("배고파요 ㅠㅠ 낑낑…", 3)
             else:
                 self.dur = 100
-                self.say("으앙… 놀랐잖아요", 2)
+                self.say("끼잉… 깜짝이야!", 2)
         elif act == "laugh":
             self.dur = 70
-            self.say("헤헤! 너무 좋아요♥", 2)
+            self.say("헤헤! 꼬리 살랑살랑~", 2)
         elif act == "eat":
             self.dur = 55
         elif act == "slide":
             self.dir = random.choice([-1, 1])
             self.dur = 34
-            self.say("슝~ 달리기!", 1.5)
+            self.say("신나게 달린다 멍!", 1.5)
         elif act == "dizzy":
             self.dur = 100
-            self.say("어질어질… 빙글빙글", 2.5)
+            self.say("어질어질… 빙글빙글!", 2.5)
         elif act == "spin":
             self.dur = 75
-            self.say("위이이잉! 날아간다~", 2)
+            self.say("위이이잉! 날아오른다 멍", 2)
         elif act == "dance":
             self.dur = 200
         elif act == "wall":
             self.phase = "go"
             self.side = "left" if self.x + g.W / 2 < (g.L + g.R) / 2 else "right"
             self.dir = -1 if self.side == "left" else 1
-            self.say("벽 타기!", 1.5)
+            self.say("벽 타기 도전!", 1.5)
         elif act == "ceil":
             self.phase = "rise"
             self.x0, self.y0 = self.x, self.y
             self.dir = random.choice([-1, 1])
-            self.say("천장으로 올라가요!", 1.5)
+            self.say("천장으로 간다 멍!", 1.5)
         elif act == "perch":
             wins = list_windows(g.T)
             if not wins:
@@ -252,7 +345,7 @@ class Pet:
             self.x0, self.y0 = self.x, self.y
             self.phase = "jump"
             self.pdur = random.randint(200, 450)
-            self.say("창 위로 올라가자!", 1.5)
+            self.say("창 위로 점프!", 1.5)
         elif act == "fall":
             self.vy = 0
 
@@ -307,14 +400,14 @@ class Pet:
         elif r == "어질어질":
             self.start("dizzy")
         else:
-            self.say(random.choice(["신난다!", "함께 놀자!", "쓰다듬어줘서 좋아♥"]), 1.5)
+            self.say(random.choice(["멍멍!", "산책 가자 멍!", "쓰다듬어줘서 좋아♥"]), 1.5)
             self.start("hop", n=1)
 
     def menu(self, e):
         g = self.g
         m = tk.Menu(self.win, tearoff=0, font=(FONT, 10))
         m.add_command(label=f"♥ 친밀도 {g.inti}  ·  함께 {g.mins}분", state="disabled")
-        m.add_command(label="친구 한 마리 더 부르기", command=g.add_pet)
+        m.add_command(label="강아지 한 마리 더 부르기", command=g.add_pet)
         m.add_command(label="이 친구 보내기", command=lambda: g.remove_pet(self))
         m.add_command(label="모두 숨기기", command=g.hide_all)
         m.add_separator()
@@ -323,14 +416,13 @@ class Pet:
         m.add_command(label="움직임 · 반응 설정...", command=g.open_motion)
         m.add_checkbutton(label="위치 고정 (자동 이동 멈추기)",
                           variable=g.lock_var, command=g.sync_flags)
-        m.add_command(label="친구 기록 · 생활 설정...", command=g.open_record)
+        m.add_command(label="강아지 기록 · 생활 설정...", command=g.open_record)
         m.add_command(label="도우미 · 할 일 · 메모 · 타이머...", command=g.open_helper)
-        m.add_command(label=f"간식 주기  ·  포만감 {int(g.sat)}/100",
+        m.add_command(label=f"개껌/간식 주기  ·  포만감 {int(g.sat)}/100",
                       command=lambda: g.feed(self))
         sub = tk.Menu(m, tearoff=0, font=(FONT, 10))
         for label, act, kw in ACT_MENU:
-            sub.add_command(label=label,
-                            command=lambda a=act, k=kw: self.start(a, **k))
+            sub.add_command(label=label, command=lambda a=act, k=kw: self.start(a, **k))
         m.add_cascade(label="동작 바로 보기", menu=sub)
         m.add_checkbutton(label="안전 모드 (바닥에서만 놀기)", variable=g.safe_var,
                           command=g.sync_flags)
@@ -402,7 +494,7 @@ class Pet:
         self.y = self.ground()
         self.fxk.add("cookie")
         if self.t >= self.dur:
-            self.say("냠냠! 맛있다♥", 2)
+            self.say("개껌 냠냠! 맛있다 멍♥", 2)
             self.start("idle")
         return 0, -abs(math.sin(self.t * 0.5)) * 4, 0, 1, 1
 
@@ -462,7 +554,7 @@ class Pet:
         g = self.g
         left = self.side == "left"
         ang = -90 if left else 90
-        fw = g.frame(ang, flip=False).width()
+        fw = g.frame(ang, flip=False, frame_idx=self.t, act=self.act).width()
         tx = g.L - (g.W - fw) / 2 if left else g.R - (g.W + fw) / 2
         if self.phase == "go":
             self.y = self.ground()
@@ -490,7 +582,7 @@ class Pet:
 
     def a_ceil(self):
         g = self.g
-        fh = g.frame(180, flip=False).height()
+        fh = g.frame(180, flip=False, frame_idx=self.t, act=self.act).height()
         ty = g.T - (g.H - fh)
         if self.phase == "rise":
             u = min(1, self.t / 25)
@@ -557,7 +649,7 @@ class Pet:
             self.fxk.add("tears")
 
         flip = self.dir > 0
-        fr = g.frame(ang, sx, sy, flip)
+        fr = g.frame(ang, sx, sy, flip, frame_idx=self.t, act=self.act, hungry=g.hungry())
         self.cv.itemconfig(self.item, image=fr)
         self.cv.coords(self.item, g.W // 2 + dx, g.H + dy)
         self.place()
@@ -623,7 +715,7 @@ class Pet:
         g, cv = self.g, self.cv
         text = self.bubble if now < self.bu else ""
         if not text and g.hungry() and g.s["notify_hungry"] and self.act in ("idle", "sit", "cry"):
-            text = "배고파요 ㅠㅠ 간식 줘요"
+            text = "배고파요 ㅠㅠ 간식 줘 멍!"
         if text != self.drawn:
             cv.delete("b")
             if text:
@@ -674,30 +766,16 @@ class Game:
         self.lock_var = tk.BooleanVar(value=self.s["locked"])
         self.safe_var = tk.BooleanVar(value=self.s["safe_mode"])
 
-        # 이미지 파일 로드 (모든 PNG 자동 탐색 및 폴백)
+        # 이미지 파일 로드 (있으면 파일 우선, 없으면 DogRenderer 절차적 생성)
         self.photo_base = None
-        target_name = None
-        for cand in ["pet.png", "PET.PNG", "pet_2.png", "PET_2.PNG"]:
+        for cand in ["dog.png", "DOG.PNG", "pet.png", "PET.PNG"]:
             p = res(cand)
             if os.path.exists(p):
-                target_name = p
-                break
-
-        if not target_name:
-            search_dir = getattr(sys, "_MEIPASS", base_dir())
-            if os.path.exists(search_dir):
-                pngs = [f for f in os.listdir(search_dir) if f.lower().endswith(".png")]
-                if pngs:
-                    target_name = os.path.join(search_dir, pngs[0])
-
-        if target_name and os.path.exists(target_name):
-            try:
-                self.photo_base = Image.open(target_name).convert("RGBA")
-            except Exception:
-                self.photo_base = None
-
-        if self.photo_base is None:
-            self.photo_base = Image.new("RGBA", (140, 140), (255, 180, 0, 255))
+                try:
+                    self.photo_base = Image.open(p).convert("RGBA")
+                    break
+                except Exception:
+                    pass
 
         self.cache = {}
         self.set_size(self.s["size"])
@@ -721,19 +799,27 @@ class Game:
     def set_size(self, size):
         h = int(size)
         self.ih = h
-        w = int(self.photo_base.width * h / max(1, self.photo_base.height))
+        if self.photo_base:
+            w = int(self.photo_base.width * h / max(1, self.photo_base.height))
+        else:
+            w = h
         self.iw = w
         self.W, self.H = w + 50, h + TOP
         self.cache.clear()
 
-    def frame(self, angle=0, sx=1.0, sy=1.0, flip=False):
+    def frame(self, angle=0, sx=1.0, sy=1.0, flip=False, frame_idx=0, act="idle", hungry=False):
         a = int(round(angle / 4.0) * 4) % 360
-        key = (a, round(sx, 2), round(sy, 2), flip)
+        f_idx = int(frame_idx) % 16 if not self.photo_base else 0
+        key = (a, round(sx, 2), round(sy, 2), flip, f_idx, act if not self.photo_base else "")
         fr = self.cache.get(key)
         if fr is None:
             if len(self.cache) > 600:
                 self.cache.clear()
-            im = self.photo_base
+            if self.photo_base:
+                im = self.photo_base.copy()
+            else:
+                im = DogRenderer.draw_dog(frame=frame_idx, act=act, hungry=hungry)
+
             if flip:
                 im = im.transpose(Image.FLIP_LEFT_RIGHT)
             tw = max(1, int(self.iw * sx))
@@ -792,10 +878,10 @@ class Game:
     def feed(self, pet=None):
         pet = pet or self.pets[0]
         if self.sat >= 100:
-            pet.say("배불러요~!", 2)
+            pet.say("배불러요~ 멍!", 2)
             return
         self.sat = min(100, self.sat + self.s["snack"])
-        pet.say("냠냠! 간식 최고예요", 2.5)
+        pet.say("냠냠! 개껌 최고다 멍", 2.5)
         pet.start("eat")
         self.save()
 
@@ -805,7 +891,7 @@ class Game:
             return
         p = Pet(self, len(self.pets))
         self.pets.append(p)
-        p.say("안녕! 놀자~", 2)
+        p.say("멍멍! 반갑다 멍!", 2)
         p.start("hop", n=2)
         self.save()
 
@@ -824,7 +910,7 @@ class Game:
             p.x = (self.L + self.R - self.W) / 2 + (i - len(self.pets) / 2) * 60
             p.y = p.ground()
             p.start("idle")
-            p.say("여기 왔어요!", 1.5)
+            p.say("여기 왔다 멍!", 1.5)
 
     def hide_all(self):
         for p in self.pets:
@@ -833,7 +919,7 @@ class Game:
         w.overrideredirect(True)
         w.attributes("-topmost", True)
         w.geometry(f"140x36+{int(self.R - 150)}+{int(self.B - 46)}")
-        tk.Button(w, text="친구 다시 부르기", font=(FONT, 9, "bold"),
+        tk.Button(w, text="강아지 다시 부르기", font=(FONT, 9, "bold"),
                   command=self.show_all).pack(fill="both", expand=True)
 
     def show_all(self):
@@ -869,13 +955,13 @@ class Game:
         lt = time.localtime()
         if s["notify_hour"] and lt.tm_min == 0 and lt.tm_hour != self.last_hour:
             self.last_hour = lt.tm_hour
-            self.pets[0].say(f"{lt.tm_hour}시 정각이에요!", 4)
+            self.pets[0].say(f"{lt.tm_hour}시 정각이다 멍!", 4)
         if self.hungry() and s["notify_hungry"] and now - self.last_hungry_note > 300 and s["hunger_min"] > 0:
             self.last_hungry_note = now
             self.pets[0].say("배고파요… 간식 주세요", 4)
         if self.timer_end and now >= self.timer_end:
             self.timer_end = 0
-            self.pets[0].say("⏰ 타이머 끝났어요!", 5)
+            self.pets[0].say("⏰ 타이머 끝났다 멍!", 5)
             for p in self.pets:
                 p.start("hop", n=3)
             if WIN and s["sound"]:
@@ -949,7 +1035,7 @@ class Game:
         return w
 
     def open_record(self):
-        w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
+        w = self.dialog("record", "강아지 기록 · 생활 설정", 440, 600)
         if w is None:
             return
         f = (FONT, 10)
@@ -957,7 +1043,7 @@ class Game:
         big.pack(anchor="w", padx=20, pady=(18, 4))
         info = tk.Label(w, font=f, bg="#fffaf7", justify="left")
         info.pack(anchor="w", padx=20)
-        tk.Button(w, text="간식 주기", font=f, command=lambda: self.feed()).pack(
+        tk.Button(w, text="개껌 주기", font=f, command=lambda: self.feed()).pack(
             anchor="w", padx=20, pady=8)
         tk.Label(w, text="생활 설정", font=(FONT, 10, "bold"), bg="#fffaf7").pack(
             anchor="w", padx=20, pady=(6, 0))
@@ -1081,6 +1167,7 @@ class Game:
         nb = ttk.Notebook(w)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
 
+        # 할 일
         t1 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t1, text="할 일")
         row = tk.Frame(t1, bg="#fffaf7")
@@ -1123,6 +1210,7 @@ class Game:
         tk.Button(bt, text="삭제", font=f, command=delete).pack(side="left", padx=4)
         draw()
 
+        # 메모
         t2 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t2, text="메모")
         txt = tk.Text(t2, font=f, wrap="word", height=18)
@@ -1137,6 +1225,7 @@ class Game:
         tk.Button(t2, text="저장", font=f, command=save_memo).pack(pady=(0, 8))
         w.protocol("WM_DELETE_WINDOW", lambda: (save_memo(), w.destroy()))
 
+        # 타이머
         t3 = tk.Frame(nb, bg="#fffaf7")
         nb.add(t3, text="타이머")
         r3 = tk.Frame(t3, bg="#fffaf7")
@@ -1160,7 +1249,7 @@ class Game:
         b3.pack()
         tk.Button(b3, text="시작", font=f, command=start_t).pack(side="left", padx=4)
         tk.Button(b3, text="취소", font=f, command=cancel_t).pack(side="left", padx=4)
-        tk.Label(t3, text="끝나면 친구가 폴짝 뛰면서 알려줘요.", font=(FONT, 9),
+        tk.Label(t3, text="끝나면 강아지가 폴짝 뛰면서 알려줘요.", font=(FONT, 9),
                  bg="#fffaf7", fg="#666").pack(pady=14)
 
         def tick_t():
