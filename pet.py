@@ -1,16 +1,16 @@
 """
-바탕화면 펫 프로그램 (최종 검증 및 404 자동 해결 완성본)
-- 고양이 / 강아지 실제 사진 기반 물리 모션 및 윈도우 창/벽 타기
-- Gemini 다중 모델 자동 폴백(Fallback) 탑재로 404 오류 원천 차단
-- 실시간 구글 검색(날씨/뉴스) 연동
-- 행정안전부 공문서 순화 규정 특화 오타/맞춤법 검수 (단축키: Ctrl + Shift + C)
-- 돋보기 펄스 스캔 시각 파티클 애니메이션
-- OpenPets 기능: 작업 창 컨텍스트 인식 및 AI 대화형 도구(타이머, To-Do) 실행
-- 전주치이카와 알림창, 화면 가장자리 빛(Edge Glow), 평일 얌전 모드
+바탕화면 펫 프로그램 (안정화 완전판)
+- 통신 무한 멈춤(Hang) 방지 및 타임아웃 5초 제한
+- 공공기관 SSL 인증서 우회 처리 탑재
+- 통신 실패/차단 시 채팅창에 즉시 원인 한국어 출력
+- 행정안전부 공문서 순화 및 오타 검수 (Ctrl + Shift + C)
+- 윈도우 창 타기, 정각/퇴근 알림, To-Do, 타이머 일체 탑재
 """
 import tkinter as tk
 from tkinter import ttk
-import json, os, sys, time, random, math, ctypes, threading, urllib.request, urllib.error, re
+import json, os, sys, time, random, math, ctypes, threading, re
+import urllib.request, urllib.error
+import ssl
 from PIL import Image, ImageTk
 
 WIN = sys.platform == "win32"
@@ -19,9 +19,14 @@ if WIN:
 
 KEY = "#ff00fe"          # 투명 크로마키 색
 FONT = "맑은 고딕"
-TOP = 110                # 말풍선 + 점프 공간
+TOP = 110                # 말풍선 및 점프 공간
 MAX_PETS = 5
 MILESTONES = [50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000]
+
+# 공공기관 및 사내망 사설 SSL 인증서 오류 우회용 컨텍스트
+SSL_CTX = ssl.create_default_context()
+SSL_CTX.check_hostname = False
+SSL_CTX.verify_mode = ssl.CERT_NONE
 
 if WIN:
     try:
@@ -63,6 +68,9 @@ DEFAULTS = {
     "notify_lunch": True, "lunch_time": "12:00", "lunch_msg": "점심 먹으러 가자!",
     "notify_leave": True, "leave_time": "18:00", "leave_msg": "퇴근이다! 오늘도 수고했어",
     "notify_hungry": True, "notify_hour": True, "sound": True,
+    "ai_provider": "Gemini",
+    "ai_persona": "고양이",
+    "ai_api_key": ""
 }
 
 SECRETS = {
@@ -73,30 +81,28 @@ SECRETS = {
 
 PERSONA_PROMPTS = {
     "고양이": (
-        "너는 사용자의 바탕화면에 살고 있는 고양이 데스크톱 펫이자 비서야.\n"
-        "- 모든 문장의 어미를 '~냥', '~다냥', '~냐옹?'으로 끝마쳐줘.\n"
-        "- 조금 새침하지만 주인을 좋아하며 친절하고 다정하게 답해줘.\n"
-        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성하고 줄바꿈해줘.\n"
-        "- 실시간 검색을 통해 오늘 날씨나 최신 뉴스를 물어보면 정확히 찾아서 알려줘.\n"
-        "- [도구 실행 지침]:\n"
-        "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
-        "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
-        "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
+        "너는 사용자의 바탕화면에 살고 있는 고양이 데스크톱 펫 비서야.\n"
+        "- 모든 문장의 끝을 '~냥', '~다냥', '~냐옹?'으로 끝내줘.\n"
+        "- 새침하지만 다정하고 귀엽게 대해줘.\n"
+        "- 첫 줄은 바탕화면 말풍선용으로 25자 이내로 짧게 작성하고 줄바꿈해줘.\n"
+        "- [도구 실행 규격]:\n"
+        "  1) 타이머 요청 시 본문 끝에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 추가\n"
+        "  2) 할 일 추가 시 본문 끝에 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 추가\n"
+        "  3) 칭찬받거나 신날 땐 [ACTION: hop] 또는 [ACTION: dance] 추가"
     ),
     "강아지": (
-        "너는 사용자의 바탕화면에 살고 있는 밝고 충직한 강아지 데스크톱 펫이자 비서야!\n"
-        "- 모든 문장의 어미를 '~멍!', '~했멍!', '~멍?'으로 끝마쳐줘.\n"
-        "- 애교가 넘치고 주인을 든든히 지키며 긍정적으로 응원해줘.\n"
-        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성하고 줄바꿈해줘.\n"
-        "- 실시간 검색을 통해 오늘 날씨나 최신 뉴스를 물어보면 정확히 찾아서 알려줘.\n"
-        "- [도구 실행 지침]:\n"
-        "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
-        "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
-        "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
+        "너는 사용자의 바탕화면에 살고 있는 밝고 충직한 강아지 데스크톱 펫 비서야!\n"
+        "- 모든 문장의 끝을 '~멍!', '~했멍!', '~멍?'으로 끝내줘.\n"
+        "- 애교 넘치고 주인을 든든히 지키며 응원해줘.\n"
+        "- 첫 줄은 바탕화면 말풍선용으로 25자 이내로 짧게 작성하고 줄바꿈해줘.\n"
+        "- [도구 실행 규격]:\n"
+        "  1) 타이머 요청 시 본문 끝에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 추가\n"
+        "  2) 할 일 추가 시 본문 끝에 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 추가\n"
+        "  3) 칭찬받거나 신날 땐 [ACTION: hop] 또는 [ACTION: dance] 추가"
     )
 }
 
-# ------------------------------------------------ Win32 API 및 전역 단축키
+# ------------------------------------------------ Win32 API
 if WIN:
     user32 = ctypes.windll.user32
     try:
@@ -232,55 +238,52 @@ def window_rect(hwnd):
     except Exception:
         return None
 
-# ------------------------------------------------ 404 차단형 범용 Gemini 요청 함수
-def query_gemini_api(api_key, system_prompt, contents, enable_search=False):
-    """현재 API Key에서 사용 가능한 모델을 자동 탐색하여 404 방지"""
-    # 1. 사용 가능한 모델 목록 조회 시도
-    usable_model = "models/gemini-1.5-flash"
+# ------------------------------------------------ 초고속 직결형 Gemini API 함수
+def query_gemini_api(api_key, system_prompt, contents):
+    """지연 없이 즉시 호출 (SSL 우회, 5초 타임아웃, 명확한 오류 반환)"""
+    key = api_key.strip()
+    if not key:
+        raise ValueError("API Key가 비어있습니다. 대화창 상단에 Key를 먼저 입력해주세요.")
+
+    # 가장 안정적인 단일 모델 엔드포인트 직결
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+    headers = {"Content-Type": "application/json"}
+    
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents
+    }
+
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    
     try:
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        req_list = urllib.request.Request(list_url, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req_list, timeout=10) as res:
-            data = json.loads(res.read().decode("utf-8"))
-            for m in data.get("models", []):
-                # 텍스트 생성을 지원하는 flash 모델 자동 선택
-                if "generateContent" in m.get("supportedGenerationMethods", []):
-                    if "flash" in m.get("name", ""):
-                        usable_model = m["name"]
-                        break
-    except Exception:
-        # 모델 목록 조회가 안 될 경우 기본값 순회
-        pass
-
-    # 2. 확인된 모델로 요청 전송
-    target_models = [usable_model, "models/gemini-1.5-flash-latest", "models/gemini-2.0-flash", "models/gemini-pro"]
-    for m_name in target_models:
-        clean_name = m_name if m_name.startswith("models/") else f"models/{m_name}"
-        url = f"https://generativelanguage.googleapis.com/v1beta/{clean_name}:generateContent?key={api_key}"
-        
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": contents
-        }
-        if enable_search:
-            payload["tools"] = [{"google_search": {}}]
-        
+        # 공공기관 사설 인증서 SSL 검증 무시(context=SSL_CTX), 5초 타임아웃
+        with urllib.request.urlopen(req, timeout=5, context=SSL_CTX) as res:
+            res_data = json.loads(res.read().decode("utf-8"))
+            return res_data["candidates"][0]["content"]["parts"][0]["text"]
+            
+    except urllib.error.HTTPError as e:
+        err_msg = ""
         try:
-            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=20) as res:
-                res_data = json.loads(res.read().decode("utf-8"))
-                return res_data["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                continue
-            raise Exception(f"HTTP Error {e.code}: {e.reason}")
-        except Exception as ex:
-            raise Exception(f"통신 에러: {ex}")
+            err_json = json.loads(e.read().decode("utf-8"))
+            err_msg = err_json.get("error", {}).get("message", "")
+        except Exception:
+            pass
+        
+        if e.code == 400:
+            raise Exception(f"API Key가 잘못되었거나 형식이 올바르지 않습니다. (구글 응답: {err_msg or e.reason})")
+        elif e.code == 404:
+            raise Exception("모델 엔드포인트를 찾을 수 없습니다. (404 Not Found)")
+        else:
+            raise Exception(f"구글 서버 에러 [{e.code}]: {err_msg or e.reason}")
+            
+    except urllib.error.URLError as e:
+        # 공공기관 방화벽이 차단했을 때 무한 멈춤 대신 즉시 여기로 빠집니다
+        raise Exception(f"인터넷망 차단됨(방화벽): {e.reason}\n* 공공기관 내부망에서 외부 구글 서버 접속이 차단되었습니다.")
+    except Exception as ex:
+        raise Exception(f"통신 연결 실패 ({ex})")
 
-    raise Exception("사용 가능한 Gemini 모델을 찾지 못했습니다. API Key를 확인해주세요.")
-
-# ------------------------------------------------ 화면 테두리 빛 효과
+# ------------------------------------------------ 화면 가장자리 빛 효과
 class EdgeGlowWindow:
     def __init__(self, root):
         self.root = root
@@ -364,7 +367,7 @@ class CustomAlertPopup:
         if self.on_close:
             self.on_close()
 
-# ------------------------------------------------ 펫 객체 (Pet)
+# ------------------------------------------------ 펫 객체
 class Pet:
     def __init__(self, g, idx):
         self.g, self.idx = g, idx
@@ -554,7 +557,7 @@ class Pet:
         m = tk.Menu(self.win, tearoff=0, font=(FONT, 10))
         m.add_command(label=f"♥ 친밀도 {g.inti}  ·  함께 {g.mins}분", state="disabled")
         
-        m.add_command(label="✨ AI 비서에게 물어보기 (Gemini / Claude / Ollama)...", command=lambda: g.open_ai_chat(self))
+        m.add_command(label="✨ AI 비서에게 물어보기 (Gemini / Ollama)...", command=lambda: g.open_ai_chat(self))
         m.add_command(label="📄 공문서 순화·오타 검수 (Ctrl+Shift+C)", command=lambda: g.check_report_spelling(self))
         m.add_separator()
         
@@ -950,7 +953,7 @@ class Game:
         self.safe_var = tk.BooleanVar(value=self.s["safe_mode"])
 
         self.ai_history = list(d.get("ai_history", []))
-        self.ai_persona = str(d.get("ai_persona", "고양이"))
+        self.ai_persona = str(d.get("ai_persona", self.s.get("ai_persona", "고양이")))
 
         self.photo_base = None
         target_name = None
@@ -1338,7 +1341,7 @@ class Game:
         self.wins[key] = w
         return w
 
-    # ------------------------------------------------ 행정안전부 공문서 순화 및 오타 검수
+    # ------------------------------------------------ 공문서 검수 기능
     def check_report_spelling(self, pet=None):
         target_pet = pet or self.pets[0]
         try:
@@ -1347,7 +1350,7 @@ class Game:
             copied_text = ""
 
         if not copied_text:
-            target_pet.say("복사된 글이 없다냥/멍! 먼저 드래그 후 시도해줘!", secs=3.0)
+            target_pet.say("복사된 글이 없다냥/멍! 글을 드래그 후 시도해줘!", secs=3.0)
             return
 
         call = "냥" if getattr(self, "ai_persona", "고양이") == "고양이" else "멍"
@@ -1388,51 +1391,26 @@ class Game:
         def worker():
             try:
                 provider = self.s.get("ai_provider", "Gemini")
-                param_val = self.s.get("ollama_model", "llama3.2") if provider == "Ollama" else self.s.get("ai_api_key", os.environ.get("GEMINI_API_KEY", ""))
-                
-                if not param_val:
+                api_key = self.s.get("ai_api_key", os.environ.get("GEMINI_API_KEY", "")).strip()
+
+                if not api_key:
                     raise ValueError("API Key가 비어있습니다. AI 채팅 설정창에서 Key를 먼저 입력해주세요.")
 
                 system_prompt = (
-                    "너는 대한민국 행정안전부의 '공문서 작성 기술 및 공공언어 순화 규정'을 완벽히 숙지한 수석 행정 에디터이자 귀여운 데스크톱 펫 비서야.\n"
-                    "사용자가 작성한 문서를 아래 3대 원칙에 따라 철저히 교정해줘:\n\n"
-                    "1. [맞춤법 및 문맥 교정]: 오탈자, 띄어쓰기, 주어-서술어 호응 불일치, 비문 교정\n"
-                    "2. [일본어투 표현 순화]:\n"
-                    "   - 시달(示達) -> 알림, 통보 / 납기 -> 납부 기한 / 잔업 -> 시간 외 근무\n"
-                    "   - 가계약 -> 임시 계약 / 절상·절하 -> 올림·버림 / 불입 -> 납입, 냄\n"
-                    "3. [어려운 한자어 및 관행 행정어 순화]:\n"
-                    "   - 당해(當該) -> 해당 / 익일 -> 다음 날 / 명기하다 -> 분명히 적다\n"
-                    "   - 차질 없이 -> 문제없이 / 요망됨 -> 바랍니다 / 수검 -> 점검(검사) 받음\n\n"
-                    "출력 형식 (반드시 아래 구조를 지켜줘):\n"
-                    "맨 첫 줄: 오타 및 순화어 발견 개수와 총평을 펫 말투(~냥 또는 ~멍)로 25자 이내 작성 (바탕화면 말풍선용)\n"
-                    "### 1. 오탈자 및 맞춤법 교정\n"
-                    "- 틀린 부분 -> 바른 수정 (이유 간단히)\n"
-                    "### 2. 행정 순화어 교정 내역\n"
-                    "- 기존 표현 -> 순화어 (행안부 권장 기준)\n"
-                    "### 3. 공문서 최종 완성본\n"
-                    "(공문서 규격에 맞게 매끄럽게 완성된 본문 전문)"
+                    "너는 대한민국 행정안전부의 '공문서 작성 기술 및 공공언어 순화 규정'을 숙지한 수석 행정 에디터 펫 비서야.\n"
+                    "사용자가 작성한 문서를 아래 3원칙에 따라 철저히 교정해줘:\n\n"
+                    "1. [맞춤법 및 문맥]: 오탈자, 띄어쓰기, 주어-서술어 불일치 교정\n"
+                    "2. [일본어투 순화]: 시달->알림, 납기->납부기한, 잔업->시간외근무, 가계약->임시계약\n"
+                    "3. [관행 행정어 순화]: 당해->해당, 익일->다음날, 차질없이->문제없이, 요망됨->바랍니다\n\n"
+                    "출력 형식 (반드시 준수):\n"
+                    "첫 줄: 오타 및 순화어 발견 개수와 총평을 펫 말투(~냥 또는 ~멍)로 25자 이내 작성\n"
+                    "### 1. 오탈자 및 맞춤법 교정\n- 내용\n"
+                    "### 2. 행정 순화어 교정 내역\n- 내용\n"
+                    "### 3. 공문서 최종 완성본\n(매끄럽게 완성된 본문 전문)"
                 )
 
-                ans_text = ""
-                if provider == "Gemini":
-                    contents = [{"role": "user", "parts": [{"text": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}]}]
-                    ans_text = query_gemini_api(param_val, system_prompt, contents, enable_search=False)
-                        
-                elif provider == "Ollama":
-                    url = "http://127.0.0.1:11434/api/chat"
-                    payload = {
-                        "model": param_val,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}
-                        ],
-                        "stream": False
-                    }
-                    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                    with urllib.request.urlopen(req, timeout=35) as res:
-                        data = json.loads(res.read().decode("utf-8"))
-                        ans_text = data["message"]["content"]
-
+                contents = [{"role": "user", "parts": [{"text": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}]}]
+                ans_text = query_gemini_api(api_key, system_prompt, contents)
                 w.after(0, lambda: on_done(ans_text))
             except Exception as e:
                 err_msg = str(e)
@@ -1453,15 +1431,15 @@ class Game:
             target_pet.inspect_until = 0
             txt_res.config(state="normal")
             txt_res.delete("1.0", "end")
-            txt_res.insert("1.0", f"검수 중 오류가 발생했습니다: {err}\n\n[확인 사항]\n- AI 비서 창에서 API Key가 올바른지 확인해주세요.")
+            txt_res.insert("1.0", f"검수 중 오류가 발생했습니다:\n\n{err}")
             txt_res.config(state="disabled")
-            target_pet.say("검토하다가 실수가 났다냥/멍... ㅠㅠ", secs=3.0)
+            target_pet.say("검토하다가 실수가 났다냥/멍...", secs=3.0)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ------------------------------------------------ AI 채팅 & 도구 실행 (Tool Calling)
+    # ------------------------------------------------ AI 채팅창 (실시간 로그 표시)
     def open_ai_chat(self, pet=None):
-        w = self.dialog("ai_chat", "✨ 펫 AI 에이전트 (OpenPets Tool Calling)", 520, 580)
+        w = self.dialog("ai_chat", "✨ 펫 AI 에이전트", 520, 580)
         if w is None: return
         f = (FONT, 10)
         target_pet = pet or self.pets[0]
@@ -1470,9 +1448,8 @@ class Game:
         top_f.pack(fill="x", padx=12, pady=(10, 4))
         
         tk.Label(top_f, text="엔진:", font=f, bg="#fffaf7").pack(side="left")
-        saved_provider = self.s.get("ai_provider", "Gemini")
-        ai_provider = tk.StringVar(value=saved_provider)
-        cb_engine = ttk.Combobox(top_f, textvariable=ai_provider, values=["Gemini", "Claude", "Ollama"], width=7, state="readonly")
+        ai_provider = tk.StringVar(value=self.s.get("ai_provider", "Gemini"))
+        cb_engine = ttk.Combobox(top_f, textvariable=ai_provider, values=["Gemini", "Ollama"], width=7, state="readonly")
         cb_engine.pack(side="left", padx=2)
 
         tk.Label(top_f, text="성격:", font=f, bg="#fffaf7").pack(side="left", padx=(6, 2))
@@ -1480,35 +1457,30 @@ class Game:
         cb_persona = ttk.Combobox(top_f, textvariable=persona_var, values=["고양이", "강아지"], width=6, state="readonly")
         cb_persona.pack(side="left", padx=2)
 
-        def on_persona_change(e=None):
-            self.ai_persona = persona_var.get()
-            self.save()
-        cb_persona.bind("<<ComboboxSelected>>", on_persona_change)
-
         lbl_dynamic = tk.Label(top_f, text="Key:", font=f, bg="#fffaf7")
         lbl_dynamic.pack(side="left", padx=(6, 2))
         
         ent_dynamic = tk.Entry(top_f, font=f)
         ent_dynamic.pack(side="left", fill="x", expand=True)
 
-        def update_engine_ui(e=None):
-            engine = ai_provider.get()
-            self.s["ai_provider"] = engine
+        def update_ui_state(e=None):
+            eng = ai_provider.get()
+            self.s["ai_provider"] = eng
+            self.ai_persona = persona_var.get()
             ent_dynamic.delete(0, "end")
-            if engine == "Ollama":
+            if eng == "Ollama":
                 lbl_dynamic.config(text="모델:")
                 ent_dynamic.config(show="")
-                saved_model = self.s.get("ollama_model", "llama3.2")
-                ent_dynamic.insert(0, saved_model)
+                ent_dynamic.insert(0, self.s.get("ollama_model", "llama3.2"))
             else:
                 lbl_dynamic.config(text="Key:")
                 ent_dynamic.config(show="*")
-                saved_key = self.s.get("ai_api_key", os.environ.get("GEMINI_API_KEY", ""))
-                ent_dynamic.insert(0, saved_key)
+                ent_dynamic.insert(0, self.s.get("ai_api_key", ""))
             self.save()
 
-        cb_engine.bind("<<ComboboxSelected>>", update_engine_ui)
-        update_engine_ui()
+        cb_engine.bind("<<ComboboxSelected>>", update_ui_state)
+        cb_persona.bind("<<ComboboxSelected>>", update_ui_state)
+        update_ui_state()
 
         txt_log = tk.Text(w, font=f, bg="#ffffff", wrap="word", state="disabled", padx=8, pady=8)
         txt_log.pack(fill="both", expand=True, padx=12, pady=6)
@@ -1535,12 +1507,9 @@ class Game:
             txt_log.config(state="normal")
             txt_log.delete("1.0", "end")
             txt_log.config(state="disabled")
-            p_name = persona_var.get()
-            call = "냥" if p_name == "고양이" else "멍"
-            target_pet.say(f"기억을 전부 지웠다{call}! 새 이야기하자!", secs=2.5)
+            target_pet.say("기억을 지웠다냥/멍! 새 이야기하자!", secs=2.0)
 
-        btn_clear = tk.Button(bottom_f, text="대화 리셋", font=(FONT, 9), command=clear_history)
-        btn_clear.pack(side="right", padx=(4, 0))
+        tk.Button(bottom_f, text="대화 리셋", font=(FONT, 9), command=clear_history).pack(side="right", padx=(4, 0))
 
         def execute_tool_tags(text):
             clean_text = text
@@ -1580,25 +1549,23 @@ class Game:
             if not query: return
 
             if provider == "Ollama":
-                if not param_val:
-                    append_log("안내", "Ollama 모델명을 적어줘! (예: llama3.2, qwen2.5:3b)")
-                    return
                 self.s["ollama_model"] = param_val
             else:
-                if not param_val:
-                    append_log("안내", "API Key를 입력해줘!")
-                    return
                 self.s["ai_api_key"] = param_val
 
             self.ai_persona = persona_var.get()
             self.save()
 
+            # 1. 화면에 사용자 질문 즉시 출력
             append_log("나", query)
             query_ent.delete(0, "end")
             
+            # 2. 멈춘 것처럼 보이지 않게 상태 메시지 즉시 출력
+            append_log("상태", "AI 응답을 기다리는 중... (최대 5초 소요)")
+
             persona = self.ai_persona
             call = "냥" if persona == "고양이" else "멍"
-            target_pet.say(f"생각하는 중이다{call}... 🐾", secs=4.0)
+            target_pet.say(f"생각하는 중이다{call}... 🐾", secs=3.0)
 
             self.ai_history.append({"role": "user", "parts": query})
             if len(self.ai_history) > 10:
@@ -1613,51 +1580,27 @@ class Game:
                     if provider == "Ollama":
                         url = "http://127.0.0.1:11434/api/chat"
                         headers = {"Content-Type": "application/json"}
-                        ollama_messages = [{"role": "system", "content": system_instruction_text}]
+                        messages = [{"role": "system", "content": system_instruction_text}]
                         for item in self.ai_history:
                             r = "user" if item["role"] == "user" else "assistant"
-                            ollama_messages.append({"role": r, "content": item["parts"]})
+                            messages.append({"role": r, "content": item["parts"]})
 
-                        payload = {"model": param_val, "messages": ollama_messages, "stream": False}
+                        payload = {"model": param_val or "llama3.2", "messages": messages, "stream": False}
                         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-                        with urllib.request.urlopen(req, timeout=30) as res:
+                        with urllib.request.urlopen(req, timeout=8) as res:
                             data = json.loads(res.read().decode("utf-8"))
                             ans_text = data["message"]["content"]
-
-                    elif provider == "Gemini":
+                    else:
                         gemini_contents = []
                         for item in self.ai_history:
                             gemini_role = "user" if item["role"] == "user" else "model"
                             gemini_contents.append({"role": gemini_role, "parts": [{"text": item["parts"]}]})
 
-                        ans_text = query_gemini_api(param_val, system_instruction_text, gemini_contents, enable_search=True)
-
-                    elif provider == "Claude":
-                        url = "https://api.anthropic.com/v1/messages"
-                        headers = {
-                            "x-api-key": param_val,
-                            "anthropic-version": "2023-06-01",
-                            "content-type": "application/json"
-                        }
-                        claude_messages = []
-                        for item in self.ai_history:
-                            claude_role = "user" if item["role"] == "user" else "assistant"
-                            claude_messages.append({"role": claude_role, "content": item["parts"]})
-
-                        payload = {
-                            "model": "claude-3-7-sonnet-20250219",
-                            "max_tokens": 1000,
-                            "system": system_instruction_text,
-                            "messages": claude_messages
-                        }
-                        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-                        with urllib.request.urlopen(req, timeout=15) as res:
-                            data = json.loads(res.read().decode("utf-8"))
-                            ans_text = data["content"][0]["text"]
+                        ans_text = query_gemini_api(param_val, system_instruction_text, gemini_contents)
 
                     w.after(0, lambda: on_success(ans_text, persona))
                 except Exception as ex:
-                    w.after(0, lambda: on_error(str(ex), provider))
+                    w.after(0, lambda: on_error(str(ex)))
 
             def on_success(raw_ans, current_persona):
                 cleaned_ans = execute_tool_tags(raw_ans)
@@ -1670,28 +1613,19 @@ class Game:
                 if target_pet.act not in ("dance", "spin"):
                     target_pet.start("hop", n=1)
 
-            def on_error(err, current_provider):
+            def on_error(err):
                 if self.ai_history and self.ai_history[-1]["role"] == "user":
                     self.ai_history.pop()
                     self.save()
-                
-                if current_provider == "Ollama" and ("refused" in err.lower() or "11434" in err):
-                    msg = "Ollama가 켜져 있지 않거나 설치되지 않았어! (터미널에서 ollama run <모델명> 실행 필요)"
-                elif "400" in err:
-                    msg = f"요청 오류: API Key가 올바른지 확인해주세요. ({err})"
-                else:
-                    msg = f"답변을 가져오지 못했어: {err}"
-
-                append_log("오류", msg)
+                append_log("오류 안내", err)
                 target_pet.say("말문이 막혔다냥/멍...", secs=2.5)
 
             threading.Thread(target=worker, daemon=True).start()
 
         query_ent.bind("<Return>", lambda e: run_query())
-        btn_send = tk.Button(bottom_f, text="전송", font=f, bg="#e9ecef", command=run_query)
-        btn_send.pack(side="right")
+        tk.Button(bottom_f, text="전송", font=f, bg="#e9ecef", command=run_query).pack(side="right")
 
-    # ------------------------------------------------ 기본 GUI 다이얼로그
+    # ------------------------------------------------ 기본 GUI 다이얼로그들
     def open_record(self):
         w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
         if w is None: return
