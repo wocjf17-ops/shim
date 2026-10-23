@@ -1,13 +1,16 @@
 """
-바탕화면 펫 프로그램 (OpenPets 지능형 에이전트 확장 버전)
-- 고양이 / 강아지 실제 사진 기반 물리 엔진 & 화면 벽/천장/외부 창 타기
-- OpenPets 기능 1: 현재 활성 창(유튜브, 코딩, 문서 등) 실시간 감지 및 맞춤 행동
-- OpenPets 기능 2: AI 채팅으로 도구 실행(타이머 맞추기, 할 일 자동 등록, 모션 명령)
-- 정각/점심/퇴근 알림, 화면 테두리 빛 효과, Ollama/Gemini/Claude 다중 엔진 지원
+바탕화면 펫 프로그램 (전체 기능 통합 및 오류 수정 버전)
+- 고양이 / 강아지 실제 사진 기반 물리 모션 및 윈도우 창/벽 타기
+- 전주치이카와 스타일 알림창, 테두리 네온 빛 효과, 평일 얌전 모드
+- Gemini 실시간 구글 검색(날씨/뉴스) 및 404 모델 엔드포인트 수정
+- OpenPets 기능 1: 현재 작업 중인 창(유튜브, 코딩 툴 등) 컨텍스트 자동 인식
+- OpenPets 기능 2: 대화 중 타이머 설정 및 할 일 등록 자동화 (Tool Calling)
+- 전역 단축키 (Ctrl + Shift + C): 드래그한 보고서 오타 및 맞춤법 즉각 교정
+- Ollama(로컬 무료) / Claude / Gemini 멀티 엔진 및 영구 대화 기록
 """
 import tkinter as tk
 from tkinter import ttk
-import json, os, sys, time, random, math, ctypes, threading, urllib.request
+import json, os, sys, time, random, math, ctypes, threading, urllib.request, re
 from PIL import Image, ImageTk
 
 WIN = sys.platform == "win32"
@@ -40,7 +43,7 @@ DEFAULTS = {
     "locked": False, "safe_mode": False,
     "show_inti": False, "idle_nap_min": 10,
     
-    # 동작 상세 설정
+    # 세부 동작 옵션
     "allow_wall": True, "allow_ceil": True, "allow_window": True,
     "allow_sit": True, "short_sit": False,
     "flee_mouse": True, "follow_mouse": False,
@@ -65,14 +68,14 @@ SECRETS = {
     "tickle": ("간지럼", "친구를 빠르게 5번 클릭하기"),
 }
 
-# ------------------------------------------------ 시스템 프롬프트 (OpenPets 에이전트 스킬 장착)
 PERSONA_PROMPTS = {
     "고양이": (
         "너는 사용자의 바탕화면에 살고 있는 고양이 데스크톱 펫이자 비서야.\n"
         "- 모든 문장의 어미를 '~냥', '~다냥', '~냐옹?'으로 끝마쳐줘.\n"
-        "- 조금 도도하지만 주인을 좋아하며 친절하게 답해줘.\n"
-        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성해줘.\n"
-        "- [도구 사용 지침]:\n"
+        "- 조금 새침하지만 주인을 좋아하며 친절하고 다정하게 답해줘.\n"
+        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성하고 줄바꿈해줘.\n"
+        "- 실시간 검색을 통해 오늘 날씨나 최신 뉴스를 물어보면 정확히 찾아서 알려줘.\n"
+        "- [도구 실행 지침]:\n"
         "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
         "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
         "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
@@ -80,16 +83,17 @@ PERSONA_PROMPTS = {
     "강아지": (
         "너는 사용자의 바탕화면에 살고 있는 밝고 충직한 강아지 데스크톱 펫이자 비서야!\n"
         "- 모든 문장의 어미를 '~멍!', '~했멍!', '~멍?'으로 끝마쳐줘.\n"
-        "- 애교가 넘치고 주인을 든든히 지키며 응원해줘.\n"
-        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성해줘.\n"
-        "- [도구 사용 지침]:\n"
+        "- 애교가 넘치고 주인을 든든히 지키며 긍정적으로 응원해줘.\n"
+        "- 답변 맨 첫 줄은 바탕화면 말풍선에 들어갈 수 있게 아주 짧은 한 줄(25자 이내)로 작성하고 줄바꿈해줘.\n"
+        "- 실시간 검색을 통해 오늘 날씨나 최신 뉴스를 물어보면 정확히 찾아서 알려줘.\n"
+        "- [도구 실행 지침]:\n"
         "  1) 사용자가 타이머를 부탁하면 답변 맨 뒤에 [TOOL: {\"action\": \"timer\", \"minutes\": 분, \"msg\": \"알림문구\"}] 태그를 달아줘.\n"
         "  2) 사용자가 할 일(To-Do) 추가를 부탁하면 [TOOL: {\"action\": \"todo\", \"text\": \"할일내용\"}] 태그를 달아줘.\n"
         "  3) 칭찬을 받거나 기분이 아주 좋을 땐 [ACTION: hop] 또는 [ACTION: dance] 태그를 달아줘."
     )
 }
 
-# ------------------------------------------------ Win32 API
+# ------------------------------------------------ Win32 API & 전역 핫키 설정
 if WIN:
     user32 = ctypes.windll.user32
     try:
@@ -110,9 +114,27 @@ if WIN:
     user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(RECT)]
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
     user32.GetForegroundWindow.restype = ctypes.c_void_p
+    
+    user32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+    user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+    MOD_CONTROL = 0x0002
+    MOD_SHIFT   = 0x0004
+    VK_C        = 0x43
+    VK_CONTROL  = 0x11
+    KEYEVENTF_KEYUP = 0x0002
+    HOTKEY_PROOFREAD_ID = 101
+
+    def simulate_copy():
+        """현재 선택된 텍스트를 클립보드로 복사"""
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_C, 0, 0, 0)
+        time.sleep(0.05)
+        user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.1)
 
 def get_foreground_window_title():
-    """현재 활성화되어 작업 중인 최상위 창 제목 가져오기"""
     if not WIN: return ""
     try:
         hwnd = user32.GetForegroundWindow()
@@ -208,7 +230,7 @@ def window_rect(hwnd):
     except Exception:
         return None
 
-# ------------------------------------------------ 화면 가장자리 빛 (Edge Glow)
+# ------------------------------------------------ 가장자리 빛 효과 (Edge Glow)
 class EdgeGlowWindow:
     def __init__(self, root):
         self.root = root
@@ -242,7 +264,7 @@ class EdgeGlowWindow:
     def hide(self):
         self.win.withdraw()
 
-# ------------------------------------------------ 정각/점심/퇴근 커스텀 팝업
+# ------------------------------------------------ 별도 알림창 (CustomAlertPopup)
 class CustomAlertPopup:
     def __init__(self, root, on_close=None):
         self.root = root
@@ -292,7 +314,7 @@ class CustomAlertPopup:
         if self.on_close:
             self.on_close()
 
-# ------------------------------------------------ 펫 한 마리 (Pet)
+# ------------------------------------------------ 펫 객체 (Pet)
 class Pet:
     def __init__(self, g, idx):
         self.g, self.idx = g, idx
@@ -481,8 +503,9 @@ class Pet:
         m = tk.Menu(self.win, tearoff=0, font=(FONT, 10))
         m.add_command(label=f"♥ 친밀도 {g.inti}  ·  함께 {g.mins}분", state="disabled")
         
-        # --- AI 질문 메뉴 ---
+        # AI 비서 및 보고서 검수 메뉴
         m.add_command(label="✨ AI 비서에게 물어보기 (Gemini / Claude / Ollama)...", command=lambda: g.open_ai_chat(self))
+        m.add_command(label="📄 클립보드 보고서 오타·맞춤법 검사 (Ctrl+Shift+C)", command=lambda: g.check_report_spelling(self))
         m.add_separator()
         
         m.add_command(label="친구 한 마리 더 부르기", command=g.add_pet)
@@ -726,7 +749,7 @@ class Pet:
         now = time.time()
         self.fxk = set()
         
-        # 커서 감지 도망
+        # 커서 감지 회피 모션
         if g.s["flee_mouse"] and self.act in ("idle", "walk", "sit") and now > self.flee_cooldown:
             px, py = self.win.winfo_pointerxy()
             cx, cy = self.x + g.W / 2, self.y + g.H / 2
@@ -835,7 +858,7 @@ ACT_MENU = [
     ("몰래 하는 군무", "dance", {}),
 ]
 
-# ------------------------------------------------ 전체 관리자 (Game)
+# ------------------------------------------------ 메인 컨트롤러 (Game)
 class Game:
     def __init__(self):
         r = self.root = tk.Tk()
@@ -858,11 +881,9 @@ class Game:
         self.lock_var = tk.BooleanVar(value=self.s["locked"])
         self.safe_var = tk.BooleanVar(value=self.s["safe_mode"])
 
-        # AI 영구 저장 데이터 복원
         self.ai_history = list(d.get("ai_history", []))
         self.ai_persona = str(d.get("ai_persona", "고양이"))
 
-        # 이미지 로드
         self.photo_base = None
         target_name = None
         for cand in ["pet.png", "PET.PNG", "pet_2.png", "PET_2.PNG"]:
@@ -903,7 +924,6 @@ class Game:
         self.circ = {}
         self.restore_win = None
         
-        # 활성 창 컨텍스트 추적
         self.last_fg_title = ""
         self.fg_context_cooldown = 0
         
@@ -914,6 +934,11 @@ class Game:
             self.pets.append(Pet(self, i))
 
         self.apply_opacity()
+
+        # 전역 핫키(Ctrl+Shift+C) 백그라운드 리스너 구동
+        if WIN:
+            self.start_global_hotkey()
+
         self.loop()
 
     def set_size(self, size):
@@ -1062,15 +1087,34 @@ class Game:
             p.win.deiconify()
             p.win.attributes("-topmost", True)
 
+    def start_global_hotkey(self):
+        """Ctrl+Shift+C 전역 핫키 백그라운드 리스너"""
+        def hotkey_worker():
+            success = user32.RegisterHotKey(None, HOTKEY_PROOFREAD_ID, MOD_CONTROL | MOD_SHIFT, VK_C)
+            if not success:
+                return
+            msg = ctypes.wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == 0x0312 and msg.wParam == HOTKEY_PROOFREAD_ID:
+                    simulate_copy()
+                    self.root.after(0, lambda: self.check_report_spelling(self.pets[0]))
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        threading.Thread(target=hotkey_worker, daemon=True).start()
+
     def quit(self):
+        if WIN:
+            try: user32.UnregisterHotKey(None, HOTKEY_PROOFREAD_ID)
+            except Exception: pass
         self.save()
         self.root.destroy()
 
-    # ------------------------------------------------ OpenPets 기능 1: 활성 창 컨텍스트 감지
     def check_active_context(self, now):
+        """OpenPets 기능 1: 활성 창 컨텍스트 실시간 인식"""
         if not WIN or now < self.fg_context_cooldown:
             return
-        self.fg_context_cooldown = now + 4.0  # 4초 주기 검사
+        self.fg_context_cooldown = now + 4.0
 
         title = get_foreground_window_title().lower()
         if not title or title == self.last_fg_title:
@@ -1078,21 +1122,18 @@ class Game:
         self.last_fg_title = title
         p = self.pets[0]
 
-        # 1) 영상 시청 감지 (유튜브, 넷플릭스 등)
         video_keywords = ["youtube", "netflix", "치지직", "chzzk", "twitch", "동영상", "영화"]
         if any(k in title for k in video_keywords):
             p.start("sit")
-            p.say("쉿! 영화 보는 중이다냥/멍~", 2.5)
+            p.say("쉿! 영화 같이 보자냥/멍~", 2.5)
             return
 
-        # 2) 코딩 및 개발 툴 감지 (VS Code, Cursor, Terminal 등)
         coding_keywords = ["visual studio", "vscode", "pycharm", "intellij", "github", "cmd", "terminal"]
         if any(k in title for k in coding_keywords):
             p.say("코딩 집중 모드! 버그 다 잡아라냥/멍!", 2.5)
             p.start("hop", n=1)
             return
 
-        # 3) 문서 및 오피스 작업 감지
         office_keywords = ["word", "excel", "powerpoint", "한글", "hwp", "스프레드시트"]
         if any(k in title for k in office_keywords):
             p.say("열일 모드다냥! 조금만 더 힘내!", 2.5)
@@ -1104,10 +1145,8 @@ class Game:
         self.tm += dt
         s = self.s
 
-        # 활성 창 컨텍스트 체크
         self.check_active_context(now)
 
-        # 전체화면 시 자동 숨기기
         if s["auto_hide_fullscreen"]:
             if is_fullscreen_app_active():
                 for p in self.pets:
@@ -1133,11 +1172,9 @@ class Game:
         lt = time.localtime()
         cur_hm = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
 
-        # 1분 단위 스케줄 체크 (정각, 점심, 퇴근)
         if lt.tm_min != self.last_min_check:
             self.last_min_check = lt.tm_min
             
-            # 정각 알림
             if lt.tm_min == 0 and lt.tm_hour != self.last_hour:
                 self.last_hour = lt.tm_hour
                 mute = s["work_hour_mute"] and (lt.tm_wday < 5) and (s["work_mute_start"] <= lt.tm_hour <= s["work_mute_end"])
@@ -1150,11 +1187,9 @@ class Game:
                     elif s.get("notify_hour", True):
                         self.pets[0].say(f"{lt.tm_hour}시 정각이에요!", 4)
 
-            # 점심 알림
             if s.get("notify_lunch", True) and cur_hm == s.get("lunch_time", "12:00"):
                 self.trigger_custom_alert("점심 알림", cur_hm, s.get("lunch_msg", "점심 먹으러 가자!"))
 
-            # 퇴근 알림
             if s.get("notify_leave", True) and cur_hm == s.get("leave_time", "18:00"):
                 self.trigger_custom_alert("퇴근 알림", cur_hm, s.get("leave_msg", "퇴근이다! 오늘도 수고했어"))
 
@@ -1162,7 +1197,6 @@ class Game:
             self.last_hungry_note = now
             self.pets[0].say("배고파요… 간식 주세요", 4)
             
-        # 타이머 완료 시
         if self.timer_end and now >= self.timer_end:
             self.timer_end = 0
             alert_msg = self.timer_custom_msg or "⏰ 타이머 끝났어요!"
@@ -1237,7 +1271,112 @@ class Game:
         self.wins[key] = w
         return w
 
-    # ------------------------------------------------ OpenPets 기능 2: AI 대화 & 도구 실행 (Tool Calling)
+    # ------------------------------------------------ 보고서 오타 및 맞춤법 검수 기능
+    def check_report_spelling(self, pet=None):
+        target_pet = pet or self.pets[0]
+        try:
+            copied_text = self.root.clipboard_get().strip()
+        except Exception:
+            copied_text = ""
+
+        if not copied_text:
+            target_pet.say("복사된 글이 없다냥/멍! 먼저 드래그 후 시도해줘!", secs=3.0)
+            return
+
+        call = "냥" if getattr(self, "ai_persona", "고양이") == "고양이" else "멍"
+        target_pet.say(f"보고서 정독 중이다{call}... 돋보기 장착! 🔍", secs=4.0)
+
+        w = self.dialog("proofread", "📄 보고서 맞춤법·오타 교정", 540, 580)
+        if w is None: return
+        f = (FONT, 10)
+
+        tk.Label(w, text="📌 교정 분석 및 수정 결과", font=(FONT, 11, "bold"), bg="#fffaf7").pack(anchor="w", padx=16, pady=(12, 4))
+        txt_res = tk.Text(w, font=f, bg="#ffffff", wrap="word", padx=10, pady=10)
+        txt_res.pack(fill="both", expand=True, padx=16, pady=6)
+        txt_res.insert("1.0", "AI가 보고서의 맞춤법, 띄어쓰기, 문맥을 분석 중입니다...\n잠시만 기다려주세요.")
+        txt_res.config(state="disabled")
+
+        btn_bar = tk.Frame(w, bg="#fffaf7")
+        btn_bar.pack(fill="x", padx=16, pady=(4, 12))
+
+        def copy_result_to_clipboard():
+            clean_res = txt_res.get("1.0", "end-1c").strip()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(clean_res)
+            target_pet.say("수정본 복사 완료다냥/멍! 붙여넣기(Ctrl+V)해줘!", secs=2.5)
+
+        btn_copy = tk.Button(btn_bar, text="📋 수정본 전체 복사", font=f, bg="#e9ecef", command=copy_result_to_clipboard)
+        btn_copy.pack(side="left")
+        btn_close = tk.Button(btn_bar, text="닫기", font=f, width=6, command=w.destroy)
+        btn_close.pack(side="right")
+
+        def worker():
+            try:
+                provider = self.s.get("ai_provider", "Gemini")
+                param_val = self.s.get("ollama_model", "llama3.2") if provider == "Ollama" else self.s.get("ai_api_key", "")
+                
+                system_prompt = (
+                    "너는 전문 보고서 및 공문서 교정 에디터이자 귀여운 반려동물 비서야.\n"
+                    "사용자가 작성한 텍스트의 맞춤법, 띄어쓰기, 어색한 문맥, 비문, 오탈자를 교정해줘.\n"
+                    "출력 형식:\n"
+                    "1. 맨 첫 줄: 오타 개수와 총평을 펫 말투(~냥 또는 ~멍)로 25자 이내로 작성 (바탕화면 말풍선용)\n"
+                    "2. 교정 내역 요약 (틀린 부분 -> 바른 수정)\n"
+                    "3. 전체 수정 완성본"
+                )
+
+                ans_text = ""
+                if provider == "Gemini":
+                    # 404 에러를 방지하는 gemini-1.5-flash 표준 엔드포인트
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={param_val}"
+                    payload = {
+                        "system_instruction": {"parts": [{"text": system_prompt}]},
+                        "contents": [{"role": "user", "parts": [{"text": f"다음 문장을 검수해줘:\n\n{copied_text}"}]}]
+                    }
+                    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+                    with urllib.request.urlopen(req, timeout=20) as res:
+                        data = json.loads(res.read().decode("utf-8"))
+                        ans_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        
+                elif provider == "Ollama":
+                    url = "http://127.0.0.1:11434/api/chat"
+                    payload = {
+                        "model": param_val,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"다음 문장을 검수해줘:\n\n{copied_text}"}
+                        ],
+                        "stream": False
+                    }
+                    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+                    with urllib.request.urlopen(req, timeout=35) as res:
+                        data = json.loads(res.read().decode("utf-8"))
+                        ans_text = data["message"]["content"]
+
+                w.after(0, lambda: on_done(ans_text))
+            except Exception as e:
+                err_msg = str(e)
+                w.after(0, lambda: on_fail(err_msg))
+
+        def on_done(result):
+            txt_res.config(state="normal")
+            txt_res.delete("1.0", "end")
+            txt_res.insert("1.0", result)
+            txt_res.config(state="disabled")
+
+            first_line = result.strip().split("\n")[0][:30]
+            target_pet.say(first_line, secs=4.5)
+            target_pet.start("hop", n=2)
+
+        def on_fail(err):
+            txt_res.config(state="normal")
+            txt_res.delete("1.0", "end")
+            txt_res.insert("1.0", f"검수 중 오류가 발생했습니다: {err}")
+            txt_res.config(state="disabled")
+            target_pet.say("검토하다가 종이를 찢어먹었다냥/멍... ㅠㅠ", secs=3.0)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------ AI 채팅 & 도구 실행 (OpenPets Tool Calling)
     def open_ai_chat(self, pet=None):
         w = self.dialog("ai_chat", "✨ 펫 AI 에이전트 (OpenPets Tool Calling)", 520, 580)
         if w is None: return
@@ -1320,18 +1459,14 @@ class Game:
         btn_clear = tk.Button(bottom_f, text="대화 리셋", font=(FONT, 9), command=clear_history)
         btn_clear.pack(side="right", padx=(4, 0))
 
-        # --- AI 응답 내 도구(Tool) 및 모션(Action) 파싱 실행기 ---
         def execute_tool_tags(text):
             clean_text = text
-            # 1) 모션 태그 처리 ([ACTION: hop] 등)
-            import re
             act_matches = re.findall(r"\[ACTION:\s*([a-zA-Z0-9_]+)\]", clean_text)
             for act in act_matches:
                 clean_text = clean_text.replace(f"[ACTION: {act}]", "").replace(f"[ACTION:{act}]", "")
                 if act in ("hop", "dance", "spin", "dizzy", "slide", "sit"):
                     target_pet.start(act)
 
-            # 2) 도구 호출 태그 처리 ([TOOL: {...}])
             tool_matches = re.findall(r"\[TOOL:\s*(\{.*?\})\]", clean_text, re.DOTALL)
             for tm in tool_matches:
                 clean_text = clean_text.replace(f"[TOOL: {tm}]", "").replace(f"[TOOL:{tm}]", "")
@@ -1407,7 +1542,8 @@ class Game:
                             ans_text = data["message"]["content"]
 
                     elif provider == "Gemini":
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={param_val}"
+                        # gemini-1.5-flash 표준 엔드포인트 및 실시간 구글 검색 도구 활성화
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={param_val}"
                         headers = {"Content-Type": "application/json"}
                         gemini_contents = []
                         for item in self.ai_history:
@@ -1415,12 +1551,12 @@ class Game:
                             gemini_contents.append({"role": gemini_role, "parts": [{"text": item["parts"]}]})
 
                         payload = {
-                           "system_instruction": {"parts": [{"text": system_instruction_text}]},
-                           "contents": gemini_contents,
-                           "tools": [{"google_search": {}}]
+                            "system_instruction": {"parts": [{"text": system_instruction_text}]},
+                            "contents": gemini_contents,
+                            "tools": [{"google_search": {}}]
                         }
                         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-                        with urllib.request.urlopen(req, timeout=15) as res:
+                        with urllib.request.urlopen(req, timeout=20) as res:
                             data = json.loads(res.read().decode("utf-8"))
                             ans_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -1453,9 +1589,7 @@ class Game:
                     w.after(0, lambda: on_error(err, provider))
 
             def on_success(raw_ans, current_persona):
-                # 도구 실행 및 태그 파싱
                 cleaned_ans = execute_tool_tags(raw_ans)
-                
                 self.ai_history.append({"role": "model", "parts": cleaned_ans})
                 self.save()
                 
@@ -1484,7 +1618,7 @@ class Game:
         btn_send = tk.Button(bottom_f, text="전송", font=f, bg="#e9ecef", command=run_query)
         btn_send.pack(side="right")
 
-    # ------------------------------------------------ 기본 설정 다이얼로그 (생략 없이 유지)
+    # ------------------------------------------------ 기본 GUI 다이얼로그 (기록/움직임/알림/도우미)
     def open_record(self):
         w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
         if w is None: return
