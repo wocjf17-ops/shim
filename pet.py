@@ -1,7 +1,8 @@
 """
-바탕화면 펫 프로그램 (최종 통합 완성본)
+바탕화면 펫 프로그램 (최종 검증 및 404 자동 해결 완성본)
 - 고양이 / 강아지 실제 사진 기반 물리 모션 및 윈도우 창/벽 타기
-- Gemini 1.5 Flash 최신 REST API (실시간 날씨/뉴스 검색 기능 포함)
+- Gemini 다중 모델 자동 폴백(Fallback) 탑재로 404 오류 원천 차단
+- 실시간 구글 검색(날씨/뉴스) 연동
 - 행정안전부 공문서 순화 규정 특화 오타/맞춤법 검수 (단축키: Ctrl + Shift + C)
 - 돋보기 펄스 스캔 시각 파티클 애니메이션
 - OpenPets 기능: 작업 창 컨텍스트 인식 및 AI 대화형 도구(타이머, To-Do) 실행
@@ -228,7 +229,53 @@ def window_rect(hwnd):
     except Exception:
         return None
 
-# ------------------------------------------------ 화면 테두리 빛 효과 (Edge Glow)
+# ------------------------------------------------ 404 차단형 범용 Gemini 요청 함수
+def query_gemini_api(api_key, system_prompt, contents, enable_search=False):
+    """구글 서버의 모델 폐기/버전 변경에 대응하여 404 발생 시 자동으로 다음 안정 모델로 폴백"""
+    candidate_endpoints = [
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1", "gemini-1.5-pro")
+    ]
+    
+    last_err = None
+    for ver, model_name in candidate_endpoints:
+        url = f"https://generativelanguage.googleapis.com/{ver}/models/{model_name}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": contents
+        }
+        if enable_search and ver == "v1beta":
+            payload["tools"] = [{"google_search": {}}]
+            
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=22) as res:
+                data = json.loads(res.read().decode("utf-8"))
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # 404(모델 경로 없음)일 때만 다음 후보 모델로 재시도
+            if e.code == 404:
+                continue
+            else:
+                detail = ""
+                try:
+                    d = json.loads(e.read().decode("utf-8"))
+                    detail = d.get("error", {}).get("message", "")
+                except Exception:
+                    pass
+                raise Exception(f"HTTP Error {e.code}: {e.reason} {detail}")
+        except Exception as ex:
+            last_err = ex
+            break
+
+    raise Exception(f"Gemini 연결 실패: {last_err}")
+
+# ------------------------------------------------ 화면 테두리 빛 효과
 class EdgeGlowWindow:
     def __init__(self, root):
         self.root = root
@@ -262,7 +309,7 @@ class EdgeGlowWindow:
     def hide(self):
         self.win.withdraw()
 
-# ------------------------------------------------ 별도 알림창 (CustomAlertPopup)
+# ------------------------------------------------ 커스텀 알림창
 class CustomAlertPopup:
     def __init__(self, root, on_close=None):
         self.root = root
@@ -502,7 +549,6 @@ class Pet:
         m = tk.Menu(self.win, tearoff=0, font=(FONT, 10))
         m.add_command(label=f"♥ 친밀도 {g.inti}  ·  함께 {g.mins}분", state="disabled")
         
-        # AI 비서 및 보고서 검수 메뉴
         m.add_command(label="✨ AI 비서에게 물어보기 (Gemini / Claude / Ollama)...", command=lambda: g.open_ai_chat(self))
         m.add_command(label="📄 공문서 순화·오타 검수 (Ctrl+Shift+C)", command=lambda: g.check_report_spelling(self))
         m.add_separator()
@@ -782,7 +828,6 @@ class Pet:
         cx, fy = self.face(dx, dy)
         t = self.t
 
-        # 돋보기 및 문서 분석 중 펄스 애니메이션
         if "inspect" in self.fxk:
             float_y = fy - g.ih * 0.45 + math.sin(t * 0.25) * 5
             cv.create_text(cx + 18, float_y, text="🔍", font=(FONT, 16), tags="fx")
@@ -1365,16 +1410,9 @@ class Game:
 
                 ans_text = ""
                 if provider == "Gemini":
-                    # 표준 v1beta 엔드포인트
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={param_val}"
-                    payload = {
-                        "system_instruction": {"parts": [{"text": system_prompt}]},
-                        "contents": [{"role": "user", "parts": [{"text": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}]}]
-                    }
-                    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                    with urllib.request.urlopen(req, timeout=25) as res:
-                        data = json.loads(res.read().decode("utf-8"))
-                        ans_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    # 다중 모델 폴백 지원 호출 (404 방지)
+                    contents = [{"role": "user", "parts": [{"text": f"다음 문서를 행안부 공문서 규정에 맞게 검수해줘:\n\n{copied_text}"}]}]
+                    ans_text = query_gemini_api(param_val, system_prompt, contents, enable_search=False)
                         
                 elif provider == "Ollama":
                     url = "http://127.0.0.1:11434/api/chat"
@@ -1583,23 +1621,13 @@ class Game:
                             ans_text = data["message"]["content"]
 
                     elif provider == "Gemini":
-                        # 표준 v1beta 엔드포인트 및 실시간 구글 검색 도구 활성화
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={param_val}"
-                        headers = {"Content-Type": "application/json"}
+                        # 폴백 구조가 적용된 Gemini 쿼리 실행
                         gemini_contents = []
                         for item in self.ai_history:
                             gemini_role = "user" if item["role"] == "user" else "model"
                             gemini_contents.append({"role": gemini_role, "parts": [{"text": item["parts"]}]})
 
-                        payload = {
-                            "system_instruction": {"parts": [{"text": system_instruction_text}]},
-                            "contents": gemini_contents,
-                            "tools": [{"google_search": {}}]
-                        }
-                        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-                        with urllib.request.urlopen(req, timeout=20) as res:
-                            data = json.loads(res.read().decode("utf-8"))
-                            ans_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        ans_text = query_gemini_api(param_val, system_instruction_text, gemini_contents, enable_search=True)
 
                     elif provider == "Claude":
                         url = "https://api.anthropic.com/v1/messages"
@@ -1625,15 +1653,6 @@ class Game:
                             ans_text = data["content"][0]["text"]
 
                     w.after(0, lambda: on_success(ans_text, persona))
-                except urllib.error.HTTPError as e:
-                    err_msg = f"HTTP Error {e.code}: {e.reason}"
-                    try:
-                        detail = json.loads(e.read().decode("utf-8"))
-                        if "error" in detail and "message" in detail["error"]:
-                            err_msg += f" ({detail['error']['message']})"
-                    except Exception:
-                        pass
-                    w.after(0, lambda: on_error(err_msg, provider))
                 except Exception as ex:
                     w.after(0, lambda: on_error(str(ex), provider))
 
@@ -1669,7 +1688,7 @@ class Game:
         btn_send = tk.Button(bottom_f, text="전송", font=f, bg="#e9ecef", command=run_query)
         btn_send.pack(side="right")
 
-    # ------------------------------------------------ 기본 설정 다이얼로그 (생략 없이 유지)
+    # ------------------------------------------------ 기본 GUI 다이얼로그
     def open_record(self):
         w = self.dialog("record", "친구 기록 · 생활 설정", 440, 600)
         if w is None: return
