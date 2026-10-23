@@ -1,38 +1,27 @@
 import tkinter as tk
 import json, os, sys, time, random, math, ctypes
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 
-# ===== 설정 (마음대로 바꿔도 돼요) =====
-SIZE = 130          # 펫 키(픽셀)
-HUNGER_MIN = 60     # 간식 없이 배고파지기까지 걸리는 시간(분)
-SNACK = 25          # 간식 1개당 포만감
-JUMP_H = 50         # 폴짝 높이
-# ======================================
-
-KEY = "#ff00fe"     # 투명 처리용 색
-TOP = 90            # 말풍선 + 점프 공간
+SIZE = 135          # 고양이 크기 (픽셀)
+HUNGER_MIN = 60     # 배고파지는 시간 (분)
+SNACK = 25          # 츄르/간식 포만감
+JUMP_H = 50         # 점프 높이
+KEY = "#ff00fe"     # 투명 배경색 키
+TOP = 100           # 프로펠러 및 말풍선용 여백 높이
 
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
 
-
 def base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-
-def res(name):
-    return os.path.join(getattr(sys, "_MEIPASS", base_dir()), name)
-
-
-SAVE = os.path.join(base_dir(), "pet_save.json")
-
+SAVE = os.path.join(base_dir(), "cat_save.json")
 
 def work_area(root):
-    """작업표시줄을 뺀 화면 영역"""
     try:
         class RECT(ctypes.Structure):
             _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
@@ -43,78 +32,200 @@ def work_area(root):
     except Exception:
         return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
 
+class CatCanvasRenderer:
+    """IMG_2927.jpg 특징을 살린 절차적 픽셀 아트 렌더러"""
+    C_CREAM = (235, 222, 205)
+    C_DARK = (48, 35, 30)
+    C_POINT = (32, 22, 18)
+    C_WHITE = (252, 252, 252)
+    C_EYE_BLUE = (85, 160, 225)
+    C_PUPIL = (15, 20, 30)
+    C_HOOD = (248, 220, 78)
+    C_HOOD_SHADOW = (220, 190, 55)
+    C_APPLE = (230, 60, 60)
+    C_PROP = (70, 130, 240)
 
-class Pet:
+    @classmethod
+    def draw_cat(cls, state, frame=0, eye_closed=False, hungry=False):
+        w, h = 180, 200
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+
+        cx, cy = 90, 135
+
+        # 1. 꼬리
+        tail_angle = math.sin(frame * 0.2) * 20
+        tx = cx + 45
+        ty = cy + 20
+        d.line([(tx, ty), (tx + 18 + tail_angle * 0.4, ty - 22), (tx + 28 + tail_angle, ty - 40)],
+               fill=cls.C_POINT, width=9)
+
+        # 2. 뒷다리 / 앉기 / 걷기 다리
+        if state == "sit_edge":
+            # 모서리에 걸터앉아 다리 흔들흔들
+            leg_swing = math.sin(frame * 0.25) * 8
+            d.rounded_rectangle([cx - 24, cy + 20, cx - 8, cy + 45 + leg_swing], radius=6, fill=cls.C_POINT)
+            d.rounded_rectangle([cx - 24, cy + 38 + leg_swing, cx - 8, cy + 47 + leg_swing], radius=4, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 8, cy + 20, cx + 24, cy + 45 - leg_swing], radius=6, fill=cls.C_POINT)
+            d.rounded_rectangle([cx + 8, cy + 38 - leg_swing, cx + 24, cy + 47 - leg_swing], radius=4, fill=cls.C_WHITE)
+        elif state == "walk":
+            leg_step = math.sin(frame * 0.4) * 9
+            d.rounded_rectangle([cx - 22 + leg_step, cy + 20, cx - 6 + leg_step, cy + 40], radius=6, fill=cls.C_POINT)
+            d.rounded_rectangle([cx - 22 + leg_step, cy + 34, cx - 6 + leg_step, cy + 42], radius=4, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 6 - leg_step, cy + 20, cx + 22 - leg_step, cy + 40], radius=6, fill=cls.C_POINT)
+            d.rounded_rectangle([cx + 6 - leg_step, cy + 34, cx + 22 - leg_step, cy + 42], radius=4, fill=cls.C_WHITE)
+        elif state == "fly":
+            # 허공에서 다리 가지런히
+            d.rounded_rectangle([cx - 18, cy + 22, cx - 4, cy + 38], radius=5, fill=cls.C_POINT)
+            d.rounded_rectangle([cx - 18, cy + 33, cx - 4, cy + 40], radius=4, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 4, cy + 22, cx + 18, cy + 38], radius=5, fill=cls.C_POINT)
+            d.rounded_rectangle([cx + 4, cy + 33, cx + 18, cy + 40], radius=4, fill=cls.C_WHITE)
+        elif state == "drag":
+            # 마우스로 끌려갈 때 버둥버둥
+            kick = math.sin(frame * 0.8) * 12
+            d.rounded_rectangle([cx - 25 - kick, cy + 18, cx - 8 - kick, cy + 38], radius=5, fill=cls.C_POINT)
+            d.rounded_rectangle([cx - 25 - kick, cy + 32, cx - 8 - kick, cy + 40], radius=4, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 8 + kick, cy + 18, cx + 25 + kick, cy + 38], radius=5, fill=cls.C_POINT)
+            d.rounded_rectangle([cx + 8 + kick, cy + 32, cx + 25 + kick, cy + 40], radius=4, fill=cls.C_WHITE)
+        else:
+            # 기본 식빵/앉은 자세 (앞에 흰 양말 발 두 개 가지런히)
+            d.ellipse([cx - 40, cy + 5, cx + 40, cy + 40], fill=cls.C_CREAM)
+            d.rounded_rectangle([cx - 22, cy + 24, cx - 6, cy + 38], radius=6, fill=cls.C_WHITE)
+            d.rounded_rectangle([cx + 6, cy + 24, cx + 22, cy + 38], radius=6, fill=cls.C_WHITE)
+
+        # 3. 푹신한 몸통
+        d.ellipse([cx - 36, cy - 8, cx + 36, cy + 34], fill=cls.C_CREAM)
+        # 하얀 가슴털
+        d.ellipse([cx - 22, cy + 2, cx + 22, cy + 30], fill=cls.C_WHITE)
+
+        # 4. 노란 사과 두건 (머리 뒤쪽 배색)
+        d.ellipse([cx - 48, cy - 65, cx + 48, cy + 15], fill=cls.C_HOOD)
+        # 두건 위 사과 패턴 장식
+        for ax, ay in [(cx - 28, cy - 40), (cx + 25, cy - 42), (cx - 15, cy - 54), (cx + 12, cy - 55)]:
+            d.ellipse([ax - 4, ay - 4, ax + 4, ay + 4], fill=cls.C_APPLE)
+            d.line([(ax, ay - 4), (ax + 2, ay - 7)], fill=(50, 120, 40), width=1)
+
+        # 5. 귀 (두건 밖/위로 살짝 비치는 뾰족귀)
+        d.polygon([(cx - 42, cy - 40), (cx - 32, cy - 72), (cx - 12, cy - 50)], fill=cls.C_POINT)
+        d.polygon([(cx - 38, cy - 42), (cx - 32, cy - 66), (cx - 18, cy - 50)], fill=(80, 50, 50))
+        d.polygon([(cx + 42, cy - 40), (cx + 32, cy - 72), (cx + 12, cy - 50)], fill=cls.C_POINT)
+        d.polygon([(cx + 38, cy - 42), (cx + 32, cy - 66), (cx + 18, cy - 50)], fill=(80, 50, 50))
+
+        # 6. 얼굴 기본 털 & 짙은 샴/래그돌 마스크
+        d.ellipse([cx - 38, cy - 54, cx + 38, cy + 8], fill=cls.C_CREAM)
+        # 짙은 갈색 얼굴 마스크
+        d.ellipse([cx - 28, cy - 45, cx + 28, cy + 4], fill=cls.C_DARK)
+
+        # 7. 흰색 주둥이 & 볼털 (턱 아래)
+        d.ellipse([cx - 18, cy - 12, cx + 18, cy + 7], fill=cls.C_WHITE)
+
+        # 8. 눈 (사파이어 블루)
+        if eye_closed or state == "sleep":
+            d.line([(cx - 22, cy - 20), (cx - 10, cy - 20)], fill=cls.C_WHITE, width=2)
+            d.line([(cx + 10, cy - 20), (cx + 22, cy - 20)], fill=cls.C_WHITE, width=2)
+        elif hungry:
+            # 배고플 때 그렁그렁한 눈
+            d.ellipse([cx - 24, cy - 28, cx - 8, cy - 12], fill=cls.C_EYE_BLUE)
+            d.ellipse([cx + 8, cy - 28, cx + 24, cy - 12], fill=cls.C_EYE_BLUE)
+            d.ellipse([cx - 18, cy - 24, cx - 12, cy - 18], fill=cls.C_WHITE)
+            d.ellipse([cx + 12, cy - 24, cx + 18, cy - 18], fill=cls.C_WHITE)
+        else:
+            d.ellipse([cx - 23, cy - 27, cx - 9, cy - 13], fill=cls.C_EYE_BLUE)
+            d.ellipse([cx + 9, cy - 27, cx + 23, cy - 13], fill=cls.C_EYE_BLUE)
+            # 동공
+            d.ellipse([cx - 18, cy - 24, cx - 14, cy - 16], fill=cls.C_PUPIL)
+            d.ellipse([cx + 14, cy - 24, cx + 18, cy - 16], fill=cls.C_PUPIL)
+            # 하이라이트
+            d.ellipse([cx - 21, cy - 26, cx - 17, cy - 22], fill=cls.C_WHITE)
+            d.ellipse([cx + 11, cy - 26, cx + 15, cy - 22], fill=cls.C_WHITE)
+
+        # 9. 코 & 입 & 수염
+        d.polygon([(cx - 3, cy - 12), (cx + 3, cy - 12), (cx, cy - 8)], fill=(40, 20, 20))
+        d.arc([cx - 8, cy - 10, cx, cy - 4], 0, 180, fill=cls.C_DARK, width=2)
+        d.arc([cx, cy - 10, cx + 8, cy - 4], 0, 180, fill=cls.C_DARK, width=2)
+
+        # 새하얀 수염
+        for dy_w in [-3, 0, 3]:
+            d.line([(cx - 16, cy - 9 + dy_w), (cx - 44, cy - 13 + dy_w * 2)], fill=cls.C_WHITE, width=1)
+            d.line([(cx + 16, cy - 9 + dy_w), (cx + 44, cy - 13 + dy_w * 2)], fill=cls.C_WHITE, width=1)
+
+        # 10. 두건 앞쪽 리본 묶음 (목 부근)
+        d.polygon([(cx - 12, cy + 6), (cx + 12, cy + 6), (cx, cy + 18)], fill=cls.C_HOOD_SHADOW)
+        d.ellipse([cx - 8, cy + 8, cx + 8, cy + 18], fill=cls.C_HOOD)
+
+        # 11. 머리 위 프로펠러 (비행 모드일 때 맹렬히 회전)
+        if state == "fly":
+            # 프로펠러 기둥
+            d.rectangle([cx - 2, cy - 78, cx + 2, cy - 64], fill=(80, 80, 80))
+            d.ellipse([cx - 5, cy - 81, cx + 5, cy - 74], fill=cls.C_DARK)
+            # 날개 회전
+            pw = abs(math.cos(frame * 0.7)) * 42 + 6
+            d.ellipse([cx - pw, cy - 83, cx + pw, cy - 77], fill=cls.C_PROP)
+
+        # 12. 간식 먹기 모드 시 츄르/과자 연출
+        if state == "snack":
+            d.rounded_rectangle([cx - 14, cy - 4, cx - 2, cy + 24], radius=3, fill=(240, 80, 120))
+            d.ellipse([cx - 10, cy - 8, cx - 4, cy - 2], fill=(220, 160, 100))
+
+        return im
+
+class DesktopPetApp:
     def __init__(self):
-        r = self.root = tk.Tk()
-        r.overrideredirect(True)
-        r.attributes("-topmost", True)
-        r.attributes("-transparentcolor", KEY)
-        r.config(bg=KEY)
-        self.L, self.T, self.R, self.B = work_area(r)
+        self.root = tk.Tk()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-transparentcolor", KEY)
+        self.root.config(bg=KEY)
 
-        # 이미지 준비
-        img = Image.open(res("pet.png")).convert("RGBA")
-        h = SIZE
-        w = int(img.width * h / img.height)
-        img = img.resize((w, h), Image.LANCZOS)
-        self.W, self.H = w + 40, h + TOP
-        self.frames = {}
-        for flip in (False, True):
-            base = img.transpose(Image.FLIP_LEFT_RIGHT) if flip else img
-            for name, (sx, sy) in {"n": (1, 1), "tall": (.92, 1.1),
-                                   "squash": (1.12, .88)}.items():
-                self.frames[(name, flip)] = self.make(base, sx, sy)
+        self.L, self.T, self.R, self.B = work_area(self.root)
+        self.W, self.H = 180, 200
 
-        self.cv = tk.Canvas(r, width=self.W, height=self.H, bg=KEY,
-                            highlightthickness=0)
+        self.cv = tk.Canvas(self.root, width=self.W, height=self.H, bg=KEY, highlightthickness=0)
         self.cv.pack()
-        self.item = self.cv.create_image(self.W // 2, self.H, anchor="s",
-                                         image=self.frames[("n", False)])
 
-        # 저장된 상태
+        # 데이터 로드
         self.sat, self.inti, self.mins = 100.0, 0, 0
         try:
             with open(SAVE, encoding="utf-8") as f:
                 d = json.load(f)
-            self.sat = float(d.get("sat", 100))
-            self.inti = int(d.get("inti", 0))
-            self.mins = int(d.get("mins", 0))
+                self.sat = float(d.get("sat", 100))
+                self.inti = int(d.get("inti", 0))
+                self.mins = int(d.get("mins", 0))
         except Exception:
             pass
 
-        # 상태
-        self.x = random.randint(self.L, max(self.L, self.R - self.W))
+        # 물리 및 애니메이션 상태
+        self.x = (self.L + self.R - self.W) // 2
         self.y = self.ground()
-        self.dir = random.choice([-1, 1])
-        self.state, self.timer = "walk", 120
-        self.vy = self.jt = self.sq = 0
-        self.jlen, self.jcount = 22, 0
+        self.dir = 1
+        self.state = "idle"
+        self.timer = 120
+        self.anim_frame = 0
+        self.blink_timer = 40
+        self.eye_closed = False
+        self.vy = 0
         self.locked = tk.BooleanVar(value=False)
         self.acc, self.last = 0.0, time.time()
         self.bubble, self.bubble_until, self.drawn = "", 0, None
-        self.moved, self.off = False, (0, 0)
+        self.moved = False
+        self.off = (0, 0)
 
-        self.cv.bind("<ButtonPress-1>", self.press)
-        self.cv.bind("<B1-Motion>", self.motion)
-        self.cv.bind("<ButtonRelease-1>", self.release)
-        self.cv.bind("<Button-3>", self.menu)
-        r.protocol("WM_DELETE_WINDOW", self.quit)
+        # 캔버스 객체
+        self.tk_img = None
+        self.item = self.cv.create_image(self.W // 2, self.H // 2, anchor="center")
+
+        # 이벤트 바인딩
+        self.cv.bind("<ButtonPress-1>", self.on_press)
+        self.cv.bind("<B1-Motion>", self.on_motion)
+        self.cv.bind("<ButtonRelease-1>", self.on_release)
+        self.cv.bind("<Button-3>", self.on_menu)
+        self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
         self.place()
         self.tick()
 
-    # ---------- 도우미 ----------
-    def make(self, im, sx, sy):
-        im = im.resize((max(1, int(im.width * sx)), max(1, int(im.height * sy))),
-                       Image.LANCZOS)
-        mask = im.getchannel("A").point(lambda v: 255 if v > 110 else 0)
-        bg = Image.new("RGB", im.size, KEY)
-        bg.paste(im.convert("RGB"), mask=mask)
-        return ImageTk.PhotoImage(bg)
-
     def ground(self):
-        return self.B - self.H
+        return self.B - self.H + 18
 
     def place(self):
         self.root.geometry(f"{self.W}x{self.H}+{int(self.x)}+{int(self.y)}")
@@ -122,26 +233,20 @@ class Pet:
     def save(self):
         try:
             with open(SAVE, "w", encoding="utf-8") as f:
-                json.dump({"sat": self.sat, "inti": self.inti,
-                           "mins": self.mins}, f)
+                json.dump({"sat": self.sat, "inti": self.inti, "mins": self.mins}, f)
         except Exception:
             pass
 
     def say(self, text, secs=2.0):
         self.bubble, self.bubble_until = text, time.time() + secs
 
-    def jump(self, count=1):
-        self.state, self.jt, self.jcount = "jump", 0, count
-
-    # ---------- 마우스 ----------
-    def press(self, e):
+    def on_press(self, e):
         self.off = (e.x_root - self.x, e.y_root - self.y)
         self.start = (e.x_root, e.y_root)
         self.moved = False
 
-    def motion(self, e):
-        if not self.moved and abs(e.x_root - self.start[0]) + \
-                abs(e.y_root - self.start[1]) > 6:
+    def on_motion(self, e):
+        if not self.moved and abs(e.x_root - self.start[0]) + abs(e.y_root - self.start[1]) > 6:
             self.moved = True
             self.state = "drag"
         if self.moved:
@@ -149,23 +254,26 @@ class Pet:
             self.y = e.y_root - self.off[1]
             self.place()
 
-    def release(self, e):
+    def on_release(self, e):
         if self.moved:
-            self.state, self.vy = "fall", 0
+            self.state = "fall"
+            self.vy = 0
         else:
-            self.say("두근!", 1.2)
-            self.jump(1)
+            # 클릭 시 상호작용
+            actions = ["골골송~♥", "야옹~", "냥!"]
+            self.say(random.choice(actions), 1.5)
+            self.state = "jump"
+            self.jt = 0
 
-    def menu(self, e):
+    def on_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)
-        m.add_command(label=f"♥ 친밀도 {self.inti}  ·  함께 {self.mins}분",
-                      state="disabled")
+        m.add_command(label=f"♥ 친밀도 {self.inti}  ·  함께 {self.mins}분", state="disabled")
         m.add_separator()
-        m.add_command(label=f"간식 주기  ·  포만감 {int(self.sat)}/100",
-                      command=self.feed)
+        m.add_command(label=f"츄르 주기  ·  포만감 {int(self.sat)}/100", command=self.feed)
+        m.add_command(label="프로펠러 비행 띄우기", command=self.start_fly)
+        m.add_command(label="화면 구석에 걸터앉기", command=self.sit_edge)
         m.add_command(label="화면 가운데로 부르기", command=self.center)
-        m.add_checkbutton(label="위치 고정 (자동 이동 멈추기)",
-                          variable=self.locked)
+        m.add_checkbutton(label="위치 고정 (자동 이동 멈추기)", variable=self.locked)
         m.add_separator()
         m.add_command(label="종료", command=self.quit)
         self.root.focus_force()
@@ -176,29 +284,44 @@ class Pet:
 
     def feed(self):
         if self.sat >= 100:
-            self.say("배불러요~", 2)
+            self.say("배불러요 냥~", 2)
             return
         self.sat = min(100, self.sat + SNACK)
-        self.say("냠냠! 맛있다", 2.5)
-        self.jump(2)
+        self.say("냠냠! 츄르 최고다냥", 2.5)
+        self.state = "snack"
+        self.timer = 50
         self.save()
+
+    def start_fly(self):
+        self.state = "fly"
+        self.timer = 150
+        self.say("두두두두! 날아간다냥", 2.0)
+
+    def sit_edge(self):
+        self.state = "sit_edge"
+        self.timer = 200
+        self.x = self.R - self.W + 10
+        self.y = self.ground()
+        self.say("살랑살랑~ 휴식 중", 2.0)
 
     def center(self):
         self.x = (self.L + self.R - self.W) / 2
         self.y = self.ground()
-        self.state, self.timer = "idle", 60
-        self.say("여기요!", 1.5)
+        self.state = "idle"
+        self.timer = 60
+        self.say("왔다냥!", 1.5)
 
     def quit(self):
         self.save()
         self.root.destroy()
 
-    # ---------- 메인 루프 ----------
     def tick(self):
         now = time.time()
         dt = now - self.last
         self.last = now
+        self.anim_frame += 1
 
+        # 포만감 및 시간 카운트
         self.sat = max(0.0, self.sat - dt * 100 / (HUNGER_MIN * 60))
         self.acc += dt
         if self.acc >= 60:
@@ -208,74 +331,109 @@ class Pet:
             self.save()
         hungry = self.sat < 20
 
-        dy, dx, name = 0, 0, "n"
+        # 눈 깜빡임 타이머
+        self.blink_timer -= 1
+        if self.blink_timer <= 0:
+            self.eye_closed = not self.eye_closed
+            self.blink_timer = 5 if self.eye_closed else random.randint(40, 100)
+
+        # 상태별 물리 엔진
         st = self.state
         if st == "fall":
             self.vy += 2
             self.y += self.vy
             if self.y >= self.ground():
                 self.y = self.ground()
-                self.state, self.timer, self.sq = "idle", 40, 6
+                self.state = "idle"
+                self.timer = 40
             self.place()
+
         elif st == "jump":
             self.jt += 1
-            t = self.jt / self.jlen
-            dy = -4 * JUMP_H * t * (1 - t)
-            name = "tall" if t < 0.5 else "n"
-            if self.jt >= self.jlen:
-                self.jcount -= 1
-                if self.jcount > 0:
-                    self.jt = 0
-                else:
-                    self.state, self.timer, self.sq = "idle", 25, 5
-        elif st in ("walk", "idle"):
+            t = self.jt / 20
+            self.y = self.ground() - math.sin(t * math.pi) * JUMP_H
+            if self.jt >= 20:
+                self.y = self.ground()
+                self.state = "idle"
+                self.timer = 30
+            self.place()
+
+        elif st == "fly":
+            # 프로펠러 회전하며 부드럽게 위아래로 둥실거리며 비행
+            self.y = max(self.T + 50, self.y - 1.8 + math.sin(self.anim_frame * 0.15) * 1.5)
+            self.x += self.dir * 1.2
+            if self.x < self.L: self.dir = 1
+            if self.x > self.R - self.W: self.dir = -1
+            self.place()
+            self.timer -= 1
+            if self.timer <= 0:
+                self.state = "fall"
+                self.say("착륙한다냥~", 1.5)
+
+        elif st == "sit_edge":
+            self.timer -= 1
+            if self.timer <= 0 and not self.locked.get():
+                self.state = "idle"
+                self.timer = 60
+
+        elif st in ("walk", "idle", "snack"):
             self.y = self.ground()
             self.timer -= 1
             if st == "walk" and not self.locked.get():
-                self.x += self.dir * (1.5 if hungry else 3)
-                if self.x < self.L - 20:
-                    self.dir = 1
-                if self.x > self.R - self.W + 20:
-                    self.dir = -1
-                dy = -abs(math.sin(now * 9)) * 5
+                self.x += self.dir * (1.5 if hungry else 2.5)
+                if self.x < self.L - 10: self.dir = 1
+                if self.x > self.R - self.W + 10: self.dir = -1
                 if self.timer <= 0:
-                    self.state, self.timer = "idle", random.randint(30, 100)
-            elif st == "walk":
+                    self.state = "idle"
+                    self.timer = random.randint(40, 120)
+            elif st == "idle":
+                if self.timer <= 0 and not self.locked.get() and not hungry:
+                    # 일정 확률로 걷기, 프로펠러 비행 또는 걸터앉기 발동
+                    pick = random.random()
+                    if pick < 0.6:
+                        self.state = "walk"
+                        self.dir = random.choice([-1, 1])
+                        self.timer = random.randint(80, 200)
+                    elif pick < 0.8:
+                        self.start_fly()
+                    else:
+                        self.sit_edge()
+            elif st == "snack" and self.timer <= 0:
                 self.state = "idle"
-            elif self.timer <= 0 and not self.locked.get() and not hungry:
-                self.state = "walk"
-                self.dir = random.choice([-1, 1])
-                self.timer = random.randint(90, 250)
-            if hungry and self.state == "idle":
-                dx = random.choice([-2, 2])  # 배고파서 떨기
+                self.timer = 40
             self.place()
 
-        if self.sq > 0 and name == "n":
-            name = "squash"
-            self.sq -= 1
+        # 이미지 렌더링
+        raw_pil = CatCanvasRenderer.draw_cat(
+            state=self.state,
+            frame=self.anim_frame,
+            eye_closed=self.eye_closed,
+            hungry=hungry
+        )
+        if self.dir < 0 and self.state != "sit_edge":
+            raw_pil = raw_pil.transpose(Image.FLIP_LEFT_RIGHT)
 
-        self.cv.itemconfig(self.item, image=self.frames[(name, self.dir > 0)])
-        self.cv.coords(self.item, self.W // 2 + dx, self.H + dy)
+        bg = Image.new("RGB", raw_pil.size, KEY)
+        bg.paste(raw_pil.convert("RGB"), mask=raw_pil.getchannel("A"))
+        self.tk_img = ImageTk.PhotoImage(bg)
+        self.cv.itemconfig(self.item, image=self.tk_img)
 
         # 말풍선
         text = self.bubble if now < self.bubble_until else ""
         if not text and hungry:
-            text = "배고파요 ㅠㅠ"
+            text = "배고파요.. 츄르 줘냥ㅠㅠ"
         if text != self.drawn:
             self.cv.delete("b")
             if text:
-                t = self.cv.create_text(self.W // 2, 20, text=text, tags="b",
-                                        font=("맑은 고딕", 10, "bold"),
-                                        fill="#333333")
+                t = self.cv.create_text(self.W // 2, 22, text=text, tags="b",
+                                        font=("맑은 고딕", 10, "bold"), fill="#2b2b2b")
                 x1, y1, x2, y2 = self.cv.bbox(t)
                 rect = self.cv.create_rectangle(x1 - 8, y1 - 4, x2 + 8, y2 + 4,
-                                                fill="white", outline="#999999",
-                                                tags="b")
+                                                fill="#ffffff", outline="#f0c040", width=2, tags="b")
                 self.cv.tag_lower(rect, t)
             self.drawn = text
 
         self.root.after(33, self.tick)
 
-
 if __name__ == "__main__":
-    Pet().root.mainloop()
+    DesktopPetApp().root.mainloop()
