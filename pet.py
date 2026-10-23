@@ -7,7 +7,7 @@ from PIL import Image, ImageTk
 # 기본 상수
 KEY = "#ff00fe"
 TOP = 90
-SIZE = 140
+SIZE = 150          # 서 있는 고양이 전신 비율에 맞춘 크기
 
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -33,7 +33,7 @@ Idle = 1
 Escape = 0
 Follow = 0
 HungerCry = 1
-Speed = 2.0
+Speed = 2.2
 FallSpeed = 3.0
 EscapeDelay = 0.12
 HungerMinutes = 60
@@ -65,7 +65,6 @@ def work_area(root):
         return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
 
 def get_foreground_window_rect(exclude_hwnd):
-    """현재 활성화된 창(크롬, 메모장 등)의 상단 좌표 가져오기"""
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         if not hwnd or hwnd == exclude_hwnd:
@@ -95,20 +94,19 @@ class Pet:
 
         self.L, self.T, self.R, self.B = work_area(r)
 
-        # 이미지 리사이즈
+        # 이미지 리사이즈 (가로세로 비율 유지)
         img = Image.open(res("pet.png")).convert("RGBA")
         h = SIZE
         w = int(img.width * h / img.height)
         img = img.resize((w, h), Image.LANCZOS)
         self.W, self.H = w + 40, h + TOP
 
-        # 애니메이션 프레임 (스쿼시/스트레칭 및 회전)
+        # 애니메이션 프레임 (스쿼시/스트레칭 및 벽 타기용 회전)
         self.frames = {}
         for flip in (False, True):
             base = img.transpose(Image.FLIP_LEFT_RIGHT) if flip else img
             for name, (sx, sy) in {"n": (1, 1), "tall": (.94, 1.08), "squash": (1.1, .9)}.items():
                 self.frames[(name, flip, 0)] = self.make(base, sx, sy, 0)
-                # 벽 타기 및 천장 매달리기용 각도
                 self.frames[(name, flip, 90)] = self.make(base, sx, sy, 90)
                 self.frames[(name, flip, -90)] = self.make(base, sx, sy, -90)
                 self.frames[(name, flip, 180)] = self.make(base, sx, sy, 180)
@@ -117,7 +115,7 @@ class Pet:
         self.cv.pack()
         self.item = self.cv.create_image(self.W // 2, self.H, anchor="s", image=self.frames[("n", False, 0)])
 
-        # 저장 데이터
+        # 저장된 상태 불러오기
         self.sat, self.inti, self.mins = 100.0, 0, 0
         try:
             with open(SAVE_PATH, encoding="utf-8") as f:
@@ -128,7 +126,7 @@ class Pet:
         except Exception:
             pass
 
-        # 물리 & 상태
+        # 상태 초기화
         self.x = (self.L + self.R - self.W) // 2
         self.y = self.ground()
         self.dir = random.choice([-1, 1])
@@ -141,11 +139,11 @@ class Pet:
         self.bubble, self.bubble_until, self.drawn = "", 0, None
         self.moved, self.off = False, (0, 0)
 
-        # 알람
+        # 알람 상태
         self.alarm_time = None
         self.alarm_msg = ""
 
-        # 이벤트
+        # 마우스 이벤트 바인딩
         self.cv.bind("<ButtonPress-1>", self.press)
         self.cv.bind("<B1-Motion>", self.motion)
         self.cv.bind("<ButtonRelease-1>", self.release)
@@ -163,7 +161,7 @@ class Pet:
         self.opt_escape = s.getboolean("Escape", fallback=False)
         self.opt_follow = s.getboolean("Follow", fallback=False)
         self.opt_hungercry = s.getboolean("HungerCry", fallback=True)
-        self.opt_speed = s.getfloat("Speed", fallback=2.0)
+        self.opt_speed = s.getfloat("Speed", fallback=2.2)
         self.opt_fallspeed = s.getfloat("FallSpeed", fallback=3.0)
         self.opt_hungermins = s.getfloat("HungerMinutes", fallback=60.0)
         opacity = s.getfloat("PetOpacityPercent", fallback=100.0) / 100.0
@@ -182,12 +180,10 @@ class Pet:
         return ImageTk.PhotoImage(bg)
 
     def ground(self):
-        # 윈도우 창 타기 옵션이 켜져 있는 경우, 창 상단에 착지할 수 있는지 확인
         if self.opt_windows:
             wrect = get_foreground_window_rect(self.hwnd)
             if wrect:
                 wl, wt, wr, wb = wrect
-                # 고양이가 창의 가로 폭 안에 있고, 창 머리 부분 근처에 있는 경우
                 if wl - 20 <= self.x <= wr - self.W + 20 and (wt - self.H) <= self.y <= (wt - self.H + 40):
                     return wt - self.H + 10
         return self.B - self.H + 10
@@ -227,7 +223,7 @@ class Pet:
         if self.moved:
             self.state, self.vy = "fall", 0
         else:
-            chats = ["골골골~♥", "야옹~", "만져줘서 좋다냥!"]
+            chats = ["골골골~♥", "장난감 물고 왔다냥!", "야옹~ 놀아달라냥!"]
             self.say(random.choice(chats), 1.5)
             self.jump(1)
 
@@ -321,7 +317,6 @@ class Pet:
         if self.alarm_time and now >= self.alarm_time:
             self.trigger_alarm()
 
-        # 포만감
         self.sat = max(0.0, self.sat - dt * 100 / (max(1.0, self.opt_hungermins) * 60))
         self.acc += dt
         if self.acc >= 60:
@@ -331,7 +326,7 @@ class Pet:
             self.save()
         hungry = self.sat < 20
 
-        # 마우스 커서 감지 (도망치기 Escape / 따라오기 Follow)
+        # 마우스 커서 감지
         cursor_x, cursor_y = self.root.winfo_pointerxy()
         dist_x = cursor_x - (self.x + self.W // 2)
         dist_y = cursor_y - (self.y + self.H // 2)
@@ -339,13 +334,11 @@ class Pet:
 
         if not self.locked.get() and self.state not in ("drag", "fall"):
             if self.opt_escape and dist < 120:
-                # 마우스 피해서 도망
                 self.dir = -1 if dist_x > 0 else 1
                 self.state = "walk"
                 self.x += self.dir * (self.opt_speed * 2.2)
                 self.say("도망가자냥!", 0.5)
             elif self.opt_follow and dist > 150:
-                # 마우스 졸졸 따라가기
                 self.dir = 1 if dist_x > 0 else -1
                 self.state = "walk"
                 self.x += self.dir * self.opt_speed
@@ -378,7 +371,6 @@ class Pet:
             self.place()
 
         elif st == "climb_wall":
-            # 벽 타기
             self.y -= self.opt_speed
             if self.y <= self.T:
                 if self.opt_ceiling:
@@ -391,7 +383,6 @@ class Pet:
             self.place()
 
         elif st == "ceiling":
-            # 천장 매달려 기어가기
             self.x -= self.dir * self.opt_speed
             if self.timer <= 0 or self.x < self.L or self.x > self.R - self.W:
                 self.state = "fall"
@@ -400,7 +391,6 @@ class Pet:
             self.place()
 
         elif st in ("walk", "idle"):
-            # 공중에 떠 있다면 바닥/창틀로 낙하
             if self.y < target_ground - 8:
                 self.state = "fall"
                 self.vy = 0
@@ -411,7 +401,6 @@ class Pet:
             if st == "walk" and not self.locked.get():
                 self.x += self.dir * (self.opt_speed * 0.7 if hungry else self.opt_speed)
 
-                # 화면 가장자리 도달 시 벽 타기 전환
                 if self.opt_walls and (self.x <= self.L or self.x >= self.R - self.W):
                     if random.random() < 0.4:
                         self.state = "climb_wall"
