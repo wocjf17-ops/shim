@@ -240,48 +240,56 @@ def window_rect(hwnd):
 
 # ------------------------------------------------ 초고속 직결형 Gemini API 함수
 def query_gemini_api(api_key, system_prompt, contents):
-    """지연 없이 즉시 호출 (SSL 우회, 5초 타임아웃, 명확한 오류 반환)"""
+"""404 Not Found 방지: 여러 모델 후보를 순차적으로 시도하여 응답 획득"""
     key = api_key.strip()
     if not key:
         raise ValueError("API Key가 비어있습니다. 대화창 상단에 Key를 먼저 입력해주세요.")
 
-    # 가장 안정적인 단일 모델 엔드포인트 직결
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+    # 404를 방지하기 위해 시도할 모델 및 버전 후보 리스트
+    candidate_endpoints = [
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1", "gemini-1.5-flash"),
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1beta", "gemini-pro"),
+    ]
+
     headers = {"Content-Type": "application/json"}
-    
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents
     }
+    data_bytes = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    
-    try:
-        # 공공기관 사설 인증서 SSL 검증 무시(context=SSL_CTX), 5초 타임아웃
-        with urllib.request.urlopen(req, timeout=5, context=SSL_CTX) as res:
-            res_data = json.loads(res.read().decode("utf-8"))
-            return res_data["candidates"][0]["content"]["parts"][0]["text"]
-            
-    except urllib.error.HTTPError as e:
-        err_msg = ""
+    last_error = None
+    for ver, model_name in candidate_endpoints:
+        url = f"https://generativelanguage.googleapis.com/{ver}/models/{model_name}:generateContent?key={key}"
+        req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+
         try:
-            err_json = json.loads(e.read().decode("utf-8"))
-            err_msg = err_json.get("error", {}).get("message", "")
-        except Exception:
-            pass
-        
-        if e.code == 400:
-            raise Exception(f"API Key가 잘못되었거나 형식이 올바르지 않습니다. (구글 응답: {err_msg or e.reason})")
-        elif e.code == 404:
-            raise Exception("모델 엔드포인트를 찾을 수 없습니다. (404 Not Found)")
-        else:
-            raise Exception(f"구글 서버 에러 [{e.code}]: {err_msg or e.reason}")
+            with urllib.request.urlopen(req, timeout=5, context=SSL_CTX) as res:
+                res_data = json.loads(res.read().decode("utf-8"))
+                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as e:
+            # 404 에러일 경우 다음 후보 모델로 넘어가서 재시도
+            if e.code == 404:
+                last_error = e
+                continue
             
-    except urllib.error.URLError as e:
-        # 공공기관 방화벽이 차단했을 때 무한 멈춤 대신 즉시 여기로 빠집니다
-        raise Exception(f"인터넷망 차단됨(방화벽): {e.reason}\n* 공공기관 내부망에서 외부 구글 서버 접속이 차단되었습니다.")
-    except Exception as ex:
-        raise Exception(f"통신 연결 실패 ({ex})")
+            # 400(키 오류) 등 다른 오류는 즉시 내용 파악
+            err_msg = ""
+            try:
+                err_json = json.loads(e.read().decode("utf-8"))
+                err_msg = err_json.get("error", {}).get("message", "")
+            except Exception:
+                pass
+            raise Exception(f"구글 서버 에러 [{e.code}]: {err_msg or e.reason}")
+        except urllib.error.URLError as e:
+            raise Exception(f"인터넷망 차단됨(방화벽): {e.reason}")
+        except Exception as ex:
+            raise Exception(f"통신 연결 실패 ({ex})")
+
+    raise Exception(f"모든 모델 엔드포인트에서 404가 발생했습니다. API Key 권한을 확인해주세요.")
 
 # ------------------------------------------------ 화면 가장자리 빛 효과
 class EdgeGlowWindow:
